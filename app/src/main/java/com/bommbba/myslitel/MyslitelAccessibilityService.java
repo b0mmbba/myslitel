@@ -3,6 +3,7 @@ package com.bommbba.myslitel;
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.GestureDescription;
 import android.graphics.Path;
+import android.graphics.Rect;
 import android.os.Bundle;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
@@ -95,6 +96,47 @@ public class MyslitelAccessibilityService extends AccessibilityService {
         return s != null && s.performGlobalAction(GLOBAL_ACTION_HOME);
     }
 
+
+    public static boolean openAppByLabel(String appName) {
+        MyslitelAccessibilityService s = service();
+        if (s == null || appName == null || appName.trim().isEmpty()) return false;
+        AccessibilityNodeInfo root = s.getRootInActiveWindow();
+        if (root == null) return false;
+        AccessibilityNodeInfo node = s.findNodeByText(root, appName.trim().toLowerCase(java.util.Locale.ROOT));
+        if (node == null) return false;
+
+        AccessibilityNodeInfo clickable = node;
+        while (clickable != null && !clickable.isClickable()) {
+            clickable = clickable.getParent();
+        }
+        if (clickable != null && clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true;
+
+        Rect r = new Rect();
+        node.getBoundsInScreen(r);
+        if (!r.isEmpty()) {
+            int cx = Math.max(1, r.centerX());
+            int cy = Math.max(1, r.centerY());
+            return s.gestureTap(cx, cy);
+        }
+        return false;
+    }
+
+    private AccessibilityNodeInfo findNodeByText(AccessibilityNodeInfo node, String needleLower) {
+        if (node == null) return null;
+        CharSequence text = node.getText();
+        CharSequence desc = node.getContentDescription();
+        String t = text == null ? "" : text.toString().trim().toLowerCase(java.util.Locale.ROOT);
+        String d = desc == null ? "" : desc.toString().trim().toLowerCase(java.util.Locale.ROOT);
+        if (!needleLower.isEmpty() && (t.equals(needleLower) || d.equals(needleLower) || t.contains(needleLower) || d.contains(needleLower))) {
+            return node;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo found = findNodeByText(node.getChild(i), needleLower);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
     public static boolean typeText(String text) {
         MyslitelAccessibilityService s = service();
         if (s == null || text == null) return false;
@@ -120,7 +162,7 @@ public class MyslitelAccessibilityService extends AccessibilityService {
     private boolean gestureTap(int x, int y) {
         Path path = new Path();
         path.moveTo(x, y);
-        GestureDescription.StrokeDescription stroke = new GestureDescription.StrokeDescription(path, 0, 70);
+        GestureDescription.StrokeDescription stroke = new GestureDescription.StrokeDescription(path, 0, 120);
         GestureDescription gesture = new GestureDescription.Builder().addStroke(stroke).build();
         return dispatchGesture(gesture, null, null);
     }

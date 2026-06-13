@@ -206,14 +206,14 @@ public class MainActivity extends Activity {
         pageScroll.addView(root, new ScrollView.LayoutParams(-1, -2));
 
         TextView title = new TextView(this);
-        title.setText("Мыслитель 0.7");
+        title.setText("Мыслитель 0.7.1");
         title.setTextSize(26);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setGravity(Gravity.CENTER_HORIZONTAL);
         root.addView(title, new LinearLayout.LayoutParams(-1, -2));
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("Седьмой прототип: нижняя панель очищена от системных надписей и кнопок ↑/↓, добавлен безопасный режим управления телефоном через Accessibility: Автошаг и осторожный Автопилот.");
+        subtitle.setText("Седьмой прототип 0.7.1: исправлена логика управления на рабочем столе. Добавлен action open_app, чтобы приложение могло открывать видимые ярлыки по названию, а не только тапать по координатам.");
         subtitle.setTextSize(14);
         subtitle.setPadding(0, 8, 0, 18);
         root.addView(subtitle, new LinearLayout.LayoutParams(-1, -2));
@@ -765,12 +765,15 @@ public class MainActivity extends Activity {
                 "Ты управляешь Android-телефоном пользователя через приложение Мыслитель. " +
                 "У тебя есть текущий скриншот. Верни строго один JSON без markdown и без пояснений вокруг. " +
                 "Координаты x/y/x2/y2 указывай в нормализованной системе 0..1000, где 0,0 — левый верх экрана. " +
-                "Доступные action: tap, swipe, scroll_down, scroll_up, type, back, home, none. " +
+                "Доступные action: open_app, tap, swipe, scroll_down, scroll_up, type, back, home, none. " +
+                "Если задача — открыть приложение, и ярлык/название приложения видно на экране, предпочитай action open_app с полем app, например {\"action\":\"open_app\",\"app\":\"Шахматы\"}. " +
+                "Если нужное приложение не видно на текущей странице лаунчера, используй scroll_down или scroll_up. " +
+                "tap используй только если ты уверен в координатах нужной кнопки/иконки. " +
                 "type используй только если на экране уже активно текстовое поле. " +
                 "Для scroll_down будет свайп вверх, чтобы список пошёл вниз; для scroll_up будет свайп вниз. " +
                 "Если видишь банк, оплату, пароль, 2FA, личную переписку, удаление данных, покупку или другое опасное действие — верни action none и risk blocked. " +
                 "Если не уверен — action none. " +
-                "Формат: {\"say\":\"коротко по-русски что делаю\",\"action\":\"tap|swipe|scroll_down|scroll_up|type|back|home|none\",\"x\":500,\"y\":500,\"x2\":500,\"y2\":300,\"text\":\"\",\"risk\":\"safe|blocked\"}";
+                "Формат: {\"say\":\"коротко по-русски что делаю\",\"action\":\"open_app|tap|swipe|scroll_down|scroll_up|type|back|home|none\",\"app\":\"\",\"x\":500,\"y\":500,\"x2\":500,\"y2\":300,\"text\":\"\",\"risk\":\"safe|blocked\"}";
 
         String userText = "Режим: " + selectedMode + "\n" +
                 "Инструкция режима: " + modeInstruction() + "\n" +
@@ -813,6 +816,7 @@ public class MainActivity extends Activity {
     private boolean executeAccessibilityCommand(JSONObject command) {
         String action = command.optString("action", "none").trim().toLowerCase(java.util.Locale.US);
         if ("none".equals(action)) return true;
+        if ("open_app".equals(action)) return MyslitelAccessibilityService.openAppByLabel(command.optString("app", ""));
         if ("tap".equals(action)) return MyslitelAccessibilityService.tapNormalized(command.optInt("x", 500), command.optInt("y", 500));
         if ("swipe".equals(action)) return MyslitelAccessibilityService.swipeNormalized(command.optInt("x", 500), command.optInt("y", 750), command.optInt("x2", 500), command.optInt("y2", 250), 450);
         if ("scroll_down".equals(action)) return MyslitelAccessibilityService.scrollDown();
