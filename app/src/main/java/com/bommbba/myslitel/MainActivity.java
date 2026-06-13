@@ -1,12 +1,14 @@
 package com.bommbba.myslitel;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Typeface;
+import android.net.Uri;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.text.InputType;
 import android.view.Gravity;
-import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -49,14 +51,14 @@ public class MainActivity extends Activity {
         root.setBackgroundColor(0xFFF7F7F7);
 
         TextView title = new TextView(this);
-        title.setText("Мыслитель 0.1");
+        title.setText("Мыслитель 0.2");
         title.setTextSize(26);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setGravity(Gravity.CENTER_HORIZONTAL);
         root.addView(title, new LinearLayout.LayoutParams(-1, -2));
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("Первый прототип: чат с ИИ. Потом добавим нижнюю панель и просмотр экрана.");
+        subtitle.setText("Второй прототип: чат с ИИ + нижняя плавающая панель поверх других приложений.");
         subtitle.setTextSize(14);
         subtitle.setPadding(0, 8, 0, 20);
         root.addView(subtitle, new LinearLayout.LayoutParams(-1, -2));
@@ -76,6 +78,31 @@ public class MainActivity extends Activity {
         });
         root.addView(saveKeyButton, new LinearLayout.LayoutParams(-1, -2));
 
+        TextView overlayTitle = new TextView(this);
+        overlayTitle.setText("Панель поверх экрана:");
+        overlayTitle.setTextSize(15);
+        overlayTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        overlayTitle.setPadding(0, 18, 0, 4);
+        root.addView(overlayTitle, new LinearLayout.LayoutParams(-1, -2));
+
+        Button permissionButton = new Button(this);
+        permissionButton.setText("1. Разрешить панель поверх экрана");
+        permissionButton.setOnClickListener(v -> requestOverlayPermission());
+        root.addView(permissionButton, new LinearLayout.LayoutParams(-1, -2));
+
+        Button startOverlayButton = new Button(this);
+        startOverlayButton.setText("2. Включить нижнюю панель");
+        startOverlayButton.setOnClickListener(v -> startOverlayPanel());
+        root.addView(startOverlayButton, new LinearLayout.LayoutParams(-1, -2));
+
+        Button stopOverlayButton = new Button(this);
+        stopOverlayButton.setText("Скрыть нижнюю панель");
+        stopOverlayButton.setOnClickListener(v -> {
+            stopService(new Intent(this, OverlayService.class));
+            appendLog("Система: нижняя панель скрыта.");
+        });
+        root.addView(stopOverlayButton, new LinearLayout.LayoutParams(-1, -2));
+
         ScrollView scrollView = new ScrollView(this);
         chatLog = new TextView(this);
         chatLog.setTextSize(15);
@@ -87,7 +114,7 @@ public class MainActivity extends Activity {
         root.addView(scrollView, scrollParams);
 
         messageInput = new EditText(this);
-        messageInput.setHint("Например: помоги придумать экран live-комментариев");
+        messageInput.setHint("Например: как должна вести себя нижняя панель?");
         messageInput.setMinLines(2);
         messageInput.setGravity(Gravity.TOP);
         root.addView(messageInput, new LinearLayout.LayoutParams(-1, -2));
@@ -98,12 +125,35 @@ public class MainActivity extends Activity {
         root.addView(askButton, new LinearLayout.LayoutParams(-1, -2));
 
         TextView warning = new TextView(this);
-        warning.setText("Важно: в этой версии нет просмотра экрана и нет управления телефоном. Это безопасная база для проверки API.");
+        warning.setText("Важно: в этой версии панель уже появляется поверх экрана, но просмотра экрана и управления телефоном ещё нет.");
         warning.setTextSize(12);
         warning.setPadding(0, 12, 0, 0);
         root.addView(warning, new LinearLayout.LayoutParams(-1, -2));
 
         setContentView(root);
+    }
+
+    private void requestOverlayPermission() {
+        if (Settings.canDrawOverlays(this)) {
+            appendLog("Система: разрешение уже включено. Теперь нажми “Включить нижнюю панель”.");
+            return;
+        }
+        appendLog("Система: открою настройки. Включи разрешение “Показывать поверх других приложений” для Мыслителя, потом вернись назад.");
+        Intent intent = new Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:" + getPackageName())
+        );
+        startActivity(intent);
+    }
+
+    private void startOverlayPanel() {
+        if (!Settings.canDrawOverlays(this)) {
+            appendLog("Система: сначала нужно разрешение “поверх других приложений”. Нажми кнопку 1.");
+            requestOverlayPermission();
+            return;
+        }
+        startService(new Intent(this, OverlayService.class));
+        appendLog("Система: нижняя панель включена. Сверни приложение и проверь её поверх других окон.");
     }
 
     private void askOpenAI() {
