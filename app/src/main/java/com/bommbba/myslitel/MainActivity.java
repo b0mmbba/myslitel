@@ -4,13 +4,7 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
-import android.graphics.PixelFormat;
 import android.graphics.Typeface;
-import android.hardware.display.DisplayManager;
-import android.hardware.display.VirtualDisplay;
-import android.media.Image;
-import android.media.ImageReader;
-import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
 import android.net.Uri;
 import android.os.Bundle;
@@ -19,12 +13,13 @@ import android.os.Looper;
 import android.provider.Settings;
 import android.text.InputType;
 import android.util.Base64;
-import android.util.DisplayMetrics;
 import android.view.Gravity;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.Spinner;
 import android.widget.TextView;
 
 import org.json.JSONArray;
@@ -38,7 +33,6 @@ import java.io.OutputStream;
 import java.lang.ref.WeakReference;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -46,31 +40,38 @@ import java.util.concurrent.Executors;
 public class MainActivity extends Activity {
     private static final String PREFS = "myslitel_prefs";
     private static final String KEY_OPENAI = "openai_api_key";
+    private static final String KEY_MODE = "work_mode";
+    private static final String KEY_SESSION_CONTEXT = "session_context";
     private static final String MODEL = "gpt-5.5";
     private static final int REQUEST_MEDIA_PROJECTION = 2303;
     private static final long LIVE_INTERVAL_MS = 12000L;
 
+    private static final String[] MODES = new String[]{"Комментатор", "Навигатор", "Учитель", "Антиошибка", "Тихий"};
     private static WeakReference<MainActivity> activeActivity;
 
     private EditText apiKeyInput;
+    private EditText contextInput;
     private EditText messageInput;
     private TextView chatLog;
     private Button askButton;
-    private Button screenButton;
     private Button analyzeButton;
     private Button liveStartButton;
     private Button liveStopButton;
+    private Spinner modeSpinner;
 
     private MediaProjectionManager projectionManager;
+    private SharedPreferences prefs;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private boolean liveModeEnabled = false;
     private boolean analysisRunning = false;
     private int liveTickCount = 0;
     private String liveContext = "";
+    private String selectedMode = "Комментатор";
+    private String sessionContext = "";
 
     public static void analyzeScreenFromOverlay() {
-        MainActivity activity = activeActivity == null ? null : activeActivity.get();
+        MainActivity activity = getActiveActivity();
         if (activity == null) {
             OverlayService.updatePanelText("Открой приложение “Мыслитель”, нажми “Разрешить просмотр экрана”, затем снова попробуй анализ.");
             return;
@@ -78,8 +79,26 @@ public class MainActivity extends Activity {
         activity.runOnUiThread(activity::analyzeCurrentScreen);
     }
 
+    public static void askFromOverlay(String text) {
+        MainActivity activity = getActiveActivity();
+        if (activity == null) {
+            OverlayService.updatePanelText("Открой Мыслитель один раз, чтобы панель связалась с приложением.");
+            return;
+        }
+        activity.runOnUiThread(() -> activity.handleOverlayQuestion(text));
+    }
+
+    public static void setModeFromOverlay(String mode) {
+        MainActivity activity = getActiveActivity();
+        if (activity == null) {
+            OverlayService.updatePanelText("Режим “" + mode + "” выбран. Открой Мыслитель, если режим не сохранился.");
+            return;
+        }
+        activity.runOnUiThread(() -> activity.setMode(mode));
+    }
+
     public static void startLiveFromOverlay() {
-        MainActivity activity = activeActivity == null ? null : activeActivity.get();
+        MainActivity activity = getActiveActivity();
         if (activity == null) {
             OverlayService.updatePanelText("Открой Мыслитель один раз, выдай просмотр экрана, потом запускай Live.");
             return;
@@ -88,7 +107,7 @@ public class MainActivity extends Activity {
     }
 
     public static void stopLiveFromOverlay() {
-        MainActivity activity = activeActivity == null ? null : activeActivity.get();
+        MainActivity activity = getActiveActivity();
         if (activity == null) {
             OverlayService.updatePanelText("Live остановлен, если приложение ещё активно. Для уверенности открой Мыслитель.");
             return;
@@ -96,11 +115,24 @@ public class MainActivity extends Activity {
         activity.runOnUiThread(activity::stopLiveMode);
     }
 
+    public static void stopScreenCaptureFromOverlay() {
+        MainActivity activity = getActiveActivity();
+        if (activity == null) {
+            OverlayService.updatePanelText("Открой Мыслитель и нажми “Остановить просмотр экрана”.");
+            return;
+        }
+        activity.runOnUiThread(activity::stopScreenCapture);
+    }
+
     public static void notifyScreenCaptureReady(boolean ready, String message) {
-        MainActivity activity = activeActivity == null ? null : activeActivity.get();
+        MainActivity activity = getActiveActivity();
         if (activity != null) {
             activity.runOnUiThread(() -> activity.appendLog(message));
         }
+    }
+
+    private static MainActivity getActiveActivity() {
+        return activeActivity == null ? null : activeActivity.get();
     }
 
     @Override
@@ -108,8 +140,9 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         activeActivity = new WeakReference<>(this);
         projectionManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
-
-        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        selectedMode = prefs.getString(KEY_MODE, "Комментатор");
+        sessionContext = prefs.getString(KEY_SESSION_CONTEXT, "");
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -117,16 +150,16 @@ public class MainActivity extends Activity {
         root.setBackgroundColor(0xFFF7F7F7);
 
         TextView title = new TextView(this);
-        title.setText("Мыслитель 0.4");
+        title.setText("Мыслитель 0.5");
         title.setTextSize(26);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setGravity(Gravity.CENTER_HORIZONTAL);
         root.addView(title, new LinearLayout.LayoutParams(-1, -2));
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("Четвёртый прототип: чат с ИИ + нижняя панель + ручной анализ + осторожный Live-режим. Live делает один анализ примерно раз в 12 секунд, а не поток 60 FPS.");
+        subtitle.setText("Пятый прототип: чат + панель + ручной анализ + Live + режимы работы + поле сообщения прямо на нижней панели + общий контекст сессии.");
         subtitle.setTextSize(14);
-        subtitle.setPadding(0, 8, 0, 20);
+        subtitle.setPadding(0, 8, 0, 18);
         root.addView(subtitle, new LinearLayout.LayoutParams(-1, -2));
 
         apiKeyInput = new EditText(this);
@@ -143,6 +176,52 @@ public class MainActivity extends Activity {
             appendLog("Система: API ключ сохранён локально в приложении. Для публичной версии так делать нельзя — нужен сервер-прокси.");
         });
         root.addView(saveKeyButton, new LinearLayout.LayoutParams(-1, -2));
+
+        TextView modeTitle = new TextView(this);
+        modeTitle.setText("Режим работы:");
+        modeTitle.setTextSize(15);
+        modeTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        modeTitle.setPadding(0, 14, 0, 4);
+        root.addView(modeTitle, new LinearLayout.LayoutParams(-1, -2));
+
+        modeSpinner = new Spinner(this);
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, MODES);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        modeSpinner.setAdapter(adapter);
+        modeSpinner.setSelection(indexOfMode(selectedMode));
+        modeSpinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(android.widget.AdapterView<?> parent, android.view.View view, int position, long id) {
+                setMode(MODES[position]);
+            }
+            @Override
+            public void onNothingSelected(android.widget.AdapterView<?> parent) {}
+        });
+        root.addView(modeSpinner, new LinearLayout.LayoutParams(-1, -2));
+
+        contextInput = new EditText(this);
+        contextInput.setHint("Контекст/цель: например, помогай мне разобраться в настройках Android");
+        contextInput.setMinLines(2);
+        contextInput.setGravity(Gravity.TOP);
+        contextInput.setText(sessionContext);
+        root.addView(contextInput, new LinearLayout.LayoutParams(-1, -2));
+
+        Button saveContextButton = new Button(this);
+        saveContextButton.setText("Сохранить контекст сессии");
+        saveContextButton.setOnClickListener(v -> saveContextFromField());
+        root.addView(saveContextButton, new LinearLayout.LayoutParams(-1, -2));
+
+        Button clearContextButton = new Button(this);
+        clearContextButton.setText("Очистить контекст сессии");
+        clearContextButton.setOnClickListener(v -> {
+            sessionContext = "";
+            liveContext = "";
+            contextInput.setText("");
+            prefs.edit().putString(KEY_SESSION_CONTEXT, "").apply();
+            appendLog("Система: контекст сессии очищен.");
+            OverlayService.updatePanelText("Контекст сессии очищен.");
+        });
+        root.addView(clearContextButton, new LinearLayout.LayoutParams(-1, -2));
 
         TextView overlayTitle = new TextView(this);
         overlayTitle.setText("Панель поверх экрана:");
@@ -176,7 +255,7 @@ public class MainActivity extends Activity {
         screenTitle.setPadding(0, 18, 0, 4);
         root.addView(screenTitle, new LinearLayout.LayoutParams(-1, -2));
 
-        screenButton = new Button(this);
+        Button screenButton = new Button(this);
         screenButton.setText("3. Разрешить просмотр экрана");
         screenButton.setOnClickListener(v -> requestScreenCapturePermission());
         root.addView(screenButton, new LinearLayout.LayoutParams(-1, -2));
@@ -213,7 +292,7 @@ public class MainActivity extends Activity {
         root.addView(scrollView, scrollParams);
 
         messageInput = new EditText(this);
-        messageInput.setHint("Например: будь навигатором и подсказывай следующий шаг");
+        messageInput.setHint("Например: запомни, что я настраиваю разрешения для приложения");
         messageInput.setMinLines(2);
         messageInput.setGravity(Gravity.TOP);
         root.addView(messageInput, new LinearLayout.LayoutParams(-1, -2));
@@ -224,20 +303,58 @@ public class MainActivity extends Activity {
         root.addView(askButton, new LinearLayout.LayoutParams(-1, -2));
 
         TextView warning = new TextView(this);
-        warning.setText("Важно: в 0.4 нет автопилота и управления телефоном. Live-режим только смотрит кадр примерно раз в 12 секунд и пишет комментарий. Для скриншотов нажимай “Остановить просмотр экрана”.");
+        warning.setText("Важно: 0.5 всё ещё не управляет телефоном. Панель пока является overlay поверх приложений; настоящий режим “под экраном”, который уменьшает область приложений, лучше делать отдельным модулем-клавиатурой в следующей версии.");
         warning.setTextSize(12);
         warning.setPadding(0, 12, 0, 0);
         root.addView(warning, new LinearLayout.LayoutParams(-1, -2));
 
         setContentView(root);
+        OverlayService.updatePanelText("Режим: " + selectedMode + ". Контекст: " + compactContextForUi());
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (activeActivity != null && activeActivity.get() == this) {
-            activeActivity = null;
-        }
+        if (activeActivity != null && activeActivity.get() == this) activeActivity = null;
+    }
+
+    private int indexOfMode(String mode) {
+        for (int i = 0; i < MODES.length; i++) if (MODES[i].equals(mode)) return i;
+        return 0;
+    }
+
+    private void setMode(String mode) {
+        selectedMode = mode;
+        if (prefs != null) prefs.edit().putString(KEY_MODE, mode).apply();
+        OverlayService.updatePanelText("Режим: " + selectedMode + ". " + modeShortHint(mode));
+    }
+
+    private String modeShortHint(String mode) {
+        if ("Навигатор".equals(mode)) return "Буду подсказывать следующий шаг.";
+        if ("Учитель".equals(mode)) return "Буду объяснять происходящее простыми словами.";
+        if ("Антиошибка".equals(mode)) return "Буду искать ошибки, риски и странные места.";
+        if ("Тихий".equals(mode)) return "Буду писать только важное.";
+        return "Буду кратко комментировать экран.";
+    }
+
+    private String modeInstruction() {
+        if ("Навигатор".equals(selectedMode)) return "Ты в режиме Навигатор: помогай пользователю понять следующий конкретный шаг. Не делай длинных объяснений.";
+        if ("Учитель".equals(selectedMode)) return "Ты в режиме Учитель: объясняй, что происходит, простым языком и обучай пользователя.";
+        if ("Антиошибка".equals(selectedMode)) return "Ты в режиме Антиошибка: ищи ошибки, предупреждения, опасные места, неправильные действия и предлагай безопасное исправление.";
+        if ("Тихий".equals(selectedMode)) return "Ты в режиме Тихий: отвечай только когда есть что-то важное. Если экран почти не изменился, скажи очень коротко: “Без изменений”.";
+        return "Ты в режиме Комментатор: кратко комментируй происходящее на экране и давай один полезный совет.";
+    }
+
+    private void saveContextFromField() {
+        sessionContext = contextInput.getText().toString().trim();
+        prefs.edit().putString(KEY_SESSION_CONTEXT, sessionContext).apply();
+        appendLog("Система: контекст сессии сохранён: " + (sessionContext.isEmpty() ? "пусто" : sessionContext));
+        OverlayService.updatePanelText("Контекст сохранён: " + compactContextForUi());
+    }
+
+    private String compactContextForUi() {
+        if (sessionContext == null || sessionContext.trim().isEmpty()) return "пока пустой";
+        return trimForContext(sessionContext, 120);
     }
 
     private void requestOverlayPermission() {
@@ -246,10 +363,7 @@ public class MainActivity extends Activity {
             return;
         }
         appendLog("Система: открою настройки. Включи разрешение “Показывать поверх других приложений” для Мыслителя, потом вернись назад.");
-        Intent intent = new Intent(
-                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                Uri.parse("package:" + getPackageName())
-        );
+        Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName()));
         startActivity(intent);
     }
 
@@ -260,7 +374,7 @@ public class MainActivity extends Activity {
             return;
         }
         startService(new Intent(this, OverlayService.class));
-        appendLog("Система: нижняя панель включена. В 0.4 на панели есть “Анализ”, “Live”, “Стоп live” и “Стоп просмотр”.");
+        appendLog("Система: нижняя панель включена. В 0.5 на панели есть поле сообщения, режимы, “Анализ”, “Live”, “Стоп live” и “Стоп просмотр”.");
     }
 
     private void requestScreenCapturePermission() {
@@ -268,99 +382,101 @@ public class MainActivity extends Activity {
             appendLog("Система: MediaProjection недоступен на этом устройстве.");
             return;
         }
-        appendLog("Система: сейчас Android спросит разрешение на запись/трансляцию экрана. Это нужно для ручного анализа кадра.");
+        appendLog("Система: Android спросит разрешение на запись/трансляцию экрана. Для теста выбирай безопасный экран, не банки и не пароли.");
         startActivityForResult(projectionManager.createScreenCaptureIntent(), REQUEST_MEDIA_PROJECTION);
     }
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != REQUEST_MEDIA_PROJECTION) return;
-
-        if (resultCode != RESULT_OK || data == null) {
-            appendLog("Система: разрешение просмотра экрана не выдано.");
-            OverlayService.updatePanelText("Просмотр экрана не разрешён. Открой Мыслитель и нажми кнопку 3.");
-            return;
-        }
-
-        Intent serviceIntent = new Intent(this, ScreenCaptureService.class);
-        serviceIntent.setAction(ScreenCaptureService.ACTION_START);
-        serviceIntent.putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, resultCode);
-        serviceIntent.putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, data);
-        if (android.os.Build.VERSION.SDK_INT >= 26) {
+        if (requestCode == REQUEST_MEDIA_PROJECTION) {
+            if (resultCode != RESULT_OK || data == null) {
+                appendLog("Система: просмотр экрана не разрешён.");
+                OverlayService.updatePanelText("Просмотр экрана не разрешён.");
+                return;
+            }
+            Intent serviceIntent = new Intent(this, ScreenCaptureService.class);
+            serviceIntent.setAction(ScreenCaptureService.ACTION_START);
+            serviceIntent.putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, resultCode);
+            serviceIntent.putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, data);
             startForegroundService(serviceIntent);
-        } else {
-            startService(serviceIntent);
         }
-        appendLog("Система: разрешение получено. Запускаю безопасный сервис просмотра экрана…");
-        OverlayService.updatePanelText("Запускаю просмотр экрана…");
-    }
-
-    public static void stopScreenCaptureFromOverlay() {
-        MainActivity activity = activeActivity == null ? null : activeActivity.get();
-        if (activity != null) {
-            activity.runOnUiThread(activity::stopScreenCapture);
-            return;
-        }
-        OverlayService.updatePanelText("Открой Мыслитель и нажми “Остановить просмотр экрана”.");
     }
 
     private void stopScreenCapture() {
-        try {
-            if (liveModeEnabled) stopLiveMode();
-            stopService(new Intent(this, ScreenCaptureService.class));
-            appendLog("Система: просмотр экрана остановлен. Теперь обычные скриншоты должны снова работать.");
-            OverlayService.updatePanelText("Просмотр экрана остановлен. Для нового анализа снова выдай разрешение в Мыслителе.");
-        } catch (Exception e) {
-            appendLog("Система: не удалось остановить просмотр экрана: " + e.getMessage());
-        }
+        if (liveModeEnabled) stopLiveMode();
+        Intent intent = new Intent(this, ScreenCaptureService.class);
+        intent.setAction(ScreenCaptureService.ACTION_STOP);
+        startService(intent);
+        appendLog("Система: просмотр экрана остановлен. Теперь обычные скриншоты должны работать как раньше.");
+        OverlayService.updatePanelText("Просмотр экрана остановлен. Для анализа снова выдай разрешение.");
     }
 
     private void analyzeCurrentScreen() {
-        analyzeCurrentScreenInternal(false);
+        analyzeCurrentScreenWithTask(null, false);
+    }
+
+    private void handleOverlayQuestion(String text) {
+        String prompt = text == null ? "" : text.trim();
+        if (prompt.isEmpty()) {
+            OverlayService.updatePanelText("Напиши сообщение в поле панели.");
+            return;
+        }
+        if (prompt.toLowerCase().startsWith("запомни")) {
+            sessionContext = mergeContext(sessionContext, prompt);
+            if (contextInput != null) contextInput.setText(sessionContext);
+            prefs.edit().putString(KEY_SESSION_CONTEXT, sessionContext).apply();
+            appendLog("Ты с панели: " + prompt);
+            appendLog("Система: добавил это в контекст сессии.");
+            OverlayService.updatePanelText("Запомнил в контексте: " + trimForContext(prompt, 120));
+            return;
+        }
+        if (ScreenCaptureService.isReady()) {
+            analyzeCurrentScreenWithTask(prompt, false);
+        } else {
+            askOpenAIWithPrompt(prompt, true);
+        }
     }
 
     private void startLiveMode() {
-        String apiKey = apiKeyInput.getText().toString().trim();
-        if (apiKey.isEmpty()) {
-            appendLog("Система: сначала вставь и сохрани OpenAI API key.");
-            OverlayService.updatePanelText("Сначала сохрани API key в Мыслителе.");
+        if (liveModeEnabled) {
+            appendLog("Система: live уже включён.");
             return;
         }
         if (!ScreenCaptureService.isReady()) {
-            appendLog("Система: сначала нажми “Разрешить просмотр экрана”, выбери весь экран и нажми “Начать”.");
-            OverlayService.updatePanelText("Сначала выдай разрешение просмотра экрана в Мыслителе.");
-            return;
-        }
-        if (liveModeEnabled) {
-            appendLog("Система: live-комментарии уже включены.");
+            appendLog("Система: сначала нажми “Разрешить просмотр экрана”.");
+            OverlayService.updatePanelText("Сначала выдай разрешение просмотра экрана.");
             return;
         }
         liveModeEnabled = true;
         liveTickCount = 0;
-        liveContext = "";
         if (liveStartButton != null) liveStartButton.setEnabled(false);
         if (liveStopButton != null) liveStopButton.setEnabled(true);
-        appendLog("Система: live-комментарии включены. Мыслитель будет анализировать один кадр примерно раз в 12 секунд. Остановить можно кнопкой “Стоп live”.");
-        OverlayService.updatePanelText("Live включён. Я буду комментировать экран примерно раз в 12 секунд.");
-        analyzeCurrentScreenInternal(true);
+        saveContextFromField();
+        appendLog("Система: live-комментарии включены. Режим: " + selectedMode + ". Интервал примерно 12 секунд.");
+        OverlayService.updatePanelText("Live включён. Режим: " + selectedMode + ".");
+        analyzeCurrentScreenInternal(true, null);
     }
 
     private void stopLiveMode() {
         liveModeEnabled = false;
         if (liveStartButton != null) liveStartButton.setEnabled(true);
         if (liveStopButton != null) liveStopButton.setEnabled(false);
-        appendLog("Система: live-комментарии остановлены. Просмотр экрана может оставаться включённым для ручного анализа; чтобы вернуть обычные скриншоты, нажми “Остановить просмотр экрана”.");
-        OverlayService.updatePanelText("Live остановлен. Можно нажать “Анализ” вручную или “Стоп просмотр”.");
+        appendLog("Система: live-комментарии остановлены. Просмотр экрана может оставаться включённым для ручного анализа.");
+        OverlayService.updatePanelText("Live остановлен. Можно писать в поле, нажать “Анализ” или “Стоп просмотр”.");
     }
 
     private void scheduleNextLiveTick(long delayMs) {
         mainHandler.postDelayed(() -> {
-            if (liveModeEnabled) analyzeCurrentScreenInternal(true);
+            if (liveModeEnabled) analyzeCurrentScreenInternal(true, null);
         }, delayMs);
     }
 
-    private void analyzeCurrentScreenInternal(boolean liveMode) {
+    private void analyzeCurrentScreenWithTask(String task, boolean liveMode) {
+        analyzeCurrentScreenInternal(liveMode, task);
+    }
+
+    private void analyzeCurrentScreenInternal(boolean liveMode, String taskOverride) {
         String apiKey = apiKeyInput.getText().toString().trim();
         if (apiKey.isEmpty()) {
             appendLog("Система: сначала вставь OpenAI API key.");
@@ -380,7 +496,9 @@ public class MainActivity extends Activity {
             return;
         }
 
-        String userTask = messageInput.getText().toString().trim();
+        saveContextFromField();
+
+        String userTask = taskOverride == null ? messageInput.getText().toString().trim() : taskOverride.trim();
         if (userTask.isEmpty()) {
             userTask = liveMode
                     ? "Ты в live-режиме. Следи за происходящим на экране и давай короткий полезный комментарий."
@@ -391,17 +509,15 @@ public class MainActivity extends Activity {
         String logPrefix;
         if (liveMode) {
             liveTickCount++;
-            finalUserTask = userTask
-                    + "\n\nПредыдущий контекст live-комментариев: " + (liveContext.isEmpty() ? "пока нет" : liveContext)
-                    + "\n\nОтветь на русском в 1-2 короткие строки. Скажи только новое/важное и один следующий полезный шаг. Не повторяйся, если экран почти не изменился.";
+            finalUserTask = buildScreenTask(userTask, true);
             logPrefix = "Live #" + liveTickCount + ": ";
             appendLog("Система: live-анализ кадра #" + liveTickCount + "…");
             OverlayService.updatePanelText("Live #" + liveTickCount + ": смотрю экран…");
         } else {
-            finalUserTask = userTask;
+            finalUserTask = buildScreenTask(userTask, false);
             logPrefix = "Мыслитель: ";
-            appendLog("Ты: анализ текущего экрана. Задача: " + userTask);
-            OverlayService.updatePanelText("Смотрю экран…");
+            appendLog("Ты: " + userTask + "\nСистема: анализ текущего экрана…");
+            OverlayService.updatePanelText("Смотрю экран с учётом сообщения…");
         }
 
         analysisRunning = true;
@@ -412,9 +528,7 @@ public class MainActivity extends Activity {
             try {
                 Thread.sleep(500);
                 Bitmap screenshot = ScreenCaptureService.acquireScreenshotBitmap();
-                if (screenshot == null) {
-                    throw new Exception("не удалось получить кадр. Попробуй ещё раз через секунду.");
-                }
+                if (screenshot == null) throw new Exception("не удалось получить кадр. Попробуй ещё раз через секунду.");
                 String dataUrl = bitmapToJpegDataUrl(screenshot);
                 screenshot.recycle();
 
@@ -422,9 +536,7 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> {
                     appendLog(logPrefix + answer);
                     OverlayService.updatePanelText(answer);
-                    if (liveMode) {
-                        liveContext = trimForContext(answer, 700);
-                    }
+                    rememberAnswer(answer, liveMode);
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
@@ -437,12 +549,95 @@ public class MainActivity extends Activity {
                     analysisRunning = false;
                     analyzeButton.setEnabled(true);
                     askButton.setEnabled(true);
-                    if (liveMode && liveModeEnabled) {
-                        scheduleNextLiveTick(LIVE_INTERVAL_MS);
-                    }
+                    if (liveMode && liveModeEnabled) scheduleNextLiveTick(LIVE_INTERVAL_MS);
                 });
             }
         });
+    }
+
+    private String buildScreenTask(String userTask, boolean liveMode) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Режим работы: ").append(selectedMode).append(".\n");
+        sb.append(modeInstruction()).append("\n\n");
+        sb.append("Долгосрочный контекст/цель пользователя: ").append(sessionContext.isEmpty() ? "пока нет" : sessionContext).append("\n");
+        sb.append("Краткий контекст предыдущих наблюдений: ").append(liveContext.isEmpty() ? "пока нет" : liveContext).append("\n\n");
+        sb.append("Текущая просьба пользователя: ").append(userTask).append("\n\n");
+        if (liveMode) {
+            sb.append("Ответь на русском в 1-2 короткие строки. Скажи только новое/важное и следующий полезный шаг. Не повторяйся, если экран почти не изменился.");
+        } else {
+            sb.append("Ответь на русском коротко и по делу. Если пользователь просит запомнить что-то, явно подтверди, что это будет учтено в контексте сессии.");
+        }
+        return sb.toString();
+    }
+
+    private void askOpenAI() {
+        String prompt = messageInput.getText().toString().trim();
+        askOpenAIWithPrompt(prompt, false);
+    }
+
+    private void askOpenAIWithPrompt(String prompt, boolean fromOverlay) {
+        String apiKey = apiKeyInput.getText().toString().trim();
+        if (apiKey.isEmpty()) {
+            appendLog("Система: сначала вставь OpenAI API key.");
+            OverlayService.updatePanelText("Сначала сохрани API key.");
+            return;
+        }
+        if (prompt == null || prompt.trim().isEmpty()) {
+            appendLog("Система: напиши вопрос.");
+            OverlayService.updatePanelText("Напиши сообщение.");
+            return;
+        }
+
+        prompt = prompt.trim();
+        saveContextFromField();
+        if (!fromOverlay) messageInput.setText("");
+        appendLog((fromOverlay ? "Ты с панели: " : "Ты: ") + prompt);
+        askButton.setEnabled(false);
+        askButton.setText("Думаю...");
+        OverlayService.updatePanelText("Думаю над сообщением…");
+
+        String finalPrompt = prompt;
+        executor.execute(() -> {
+            try {
+                String answer = callResponsesApi(apiKey, finalPrompt);
+                runOnUiThread(() -> {
+                    appendLog("Мыслитель: " + answer);
+                    OverlayService.updatePanelText(answer);
+                    rememberAnswer(answer, false);
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    appendLog("Ошибка: " + e.getMessage());
+                    OverlayService.updatePanelText("Ошибка: " + e.getMessage());
+                });
+            } finally {
+                runOnUiThread(() -> {
+                    askButton.setEnabled(true);
+                    askButton.setText("Спросить Мыслителя");
+                });
+            }
+        });
+    }
+
+    private void rememberAnswer(String answer, boolean fromLive) {
+        String clean = trimForContext(answer, 700);
+        liveContext = clean;
+        if (answer.toLowerCase().contains("запом")) {
+            sessionContext = mergeContext(sessionContext, answer);
+            if (contextInput != null) contextInput.setText(sessionContext);
+            prefs.edit().putString(KEY_SESSION_CONTEXT, sessionContext).apply();
+        }
+        if (!fromLive && !clean.isEmpty()) {
+            liveContext = trimForContext((liveContext + " | " + clean), 900);
+        }
+    }
+
+    private String mergeContext(String oldContext, String newFact) {
+        String base = oldContext == null ? "" : oldContext.trim();
+        String addition = newFact == null ? "" : newFact.trim();
+        if (addition.isEmpty()) return base;
+        String merged = base.isEmpty() ? addition : base + "\n- " + addition;
+        return trimForContext(merged, 1200);
     }
 
     private String trimForContext(String text, int maxChars) {
@@ -459,46 +654,13 @@ public class MainActivity extends Activity {
         return "data:image/jpeg;base64," + base64;
     }
 
-    private void askOpenAI() {
-        String apiKey = apiKeyInput.getText().toString().trim();
-        String prompt = messageInput.getText().toString().trim();
-
-        if (apiKey.isEmpty()) {
-            appendLog("Система: сначала вставь OpenAI API key.");
-            return;
-        }
-        if (prompt.isEmpty()) {
-            appendLog("Система: напиши вопрос.");
-            return;
-        }
-
-        messageInput.setText("");
-        appendLog("Ты: " + prompt);
-        askButton.setEnabled(false);
-        askButton.setText("Думаю...");
-
-        executor.execute(() -> {
-            try {
-                String answer = callResponsesApi(apiKey, prompt);
-                runOnUiThread(() -> appendLog("Мыслитель: " + answer));
-            } catch (Exception e) {
-                runOnUiThread(() -> appendLog("Ошибка: " + e.getMessage()));
-            } finally {
-                runOnUiThread(() -> {
-                    askButton.setEnabled(true);
-                    askButton.setText("Спросить Мыслителя");
-                });
-            }
-        });
-    }
-
     private String callResponsesApi(String apiKey, String userPrompt) throws Exception {
         JSONArray input = new JSONArray();
         input.put(new JSONObject()
                 .put("role", "system")
                 .put("content", new JSONArray().put(new JSONObject()
                         .put("type", "input_text")
-                        .put("text", "Ты — приложение Мыслитель: коротко, понятно и по делу помогаешь пользователю. Отвечай на русском. Для будущей версии помни: продукт должен стать экранным AI-комментатором Android."))));
+                        .put("text", "Ты — приложение Мыслитель. Отвечай на русском. " + modeInstruction() + " Долгосрочный контекст пользователя: " + (sessionContext.isEmpty() ? "пока нет" : sessionContext) + ". Краткий контекст последних наблюдений: " + (liveContext.isEmpty() ? "пока нет" : liveContext) + "."))));
         input.put(new JSONObject()
                 .put("role", "user")
                 .put("content", new JSONArray().put(new JSONObject()
@@ -508,7 +670,7 @@ public class MainActivity extends Activity {
         JSONObject payload = new JSONObject()
                 .put("model", MODEL)
                 .put("input", input)
-                .put("max_output_tokens", 600);
+                .put("max_output_tokens", 450);
 
         return postToResponsesApi(apiKey, payload);
     }
@@ -519,7 +681,7 @@ public class MainActivity extends Activity {
                 .put("role", "system")
                 .put("content", new JSONArray().put(new JSONObject()
                         .put("type", "input_text")
-                        .put("text", "Ты — экранный AI-комментатор Android-приложения Мыслитель. Пользователь вручную отправил один кадр экрана. Отвечай на русском, коротко: 1) что видно/что происходит, 2) один полезный совет. Не проси доступы и не утверждай, что управляешь телефоном."))));
+                        .put("text", "Ты — экранный AI-комментатор Android-приложения Мыслитель. Не управляй телефоном, только комментируй, объясняй и советуй. Всегда учитывай режим работы и контекст. Не проси доступы, если они уже выданы."))));
         input.put(new JSONObject()
                 .put("role", "user")
                 .put("content", new JSONArray()
@@ -556,14 +718,11 @@ public class MainActivity extends Activity {
         int code = connection.getResponseCode();
         InputStream stream = code >= 200 && code < 300 ? connection.getInputStream() : connection.getErrorStream();
         String response = readAll(stream);
-        if (code < 200 || code >= 300) {
-            throw new Exception("HTTP " + code + ": " + response);
-        }
+        if (code < 200 || code >= 300) throw new Exception("HTTP " + code + ": " + response);
 
         JSONObject json = new JSONObject(response);
         String outputText = json.optString("output_text", "").trim();
         if (!outputText.isEmpty()) return outputText;
-
         return extractTextFallback(json);
     }
 
@@ -602,7 +761,6 @@ public class MainActivity extends Activity {
     }
 
     private void appendLog(String text) {
-        chatLog.append("\n" + text + "\n");
+        if (chatLog != null) chatLog.append("\n" + text + "\n");
     }
-
 }
