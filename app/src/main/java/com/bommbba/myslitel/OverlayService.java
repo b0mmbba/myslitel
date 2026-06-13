@@ -60,27 +60,27 @@ public class OverlayService extends Service {
         panel.setBackground(bg);
 
         TextView title = new TextView(this);
-        title.setText("Мыслитель 0.3 — панель активна");
+        title.setText("Мыслитель 0.4 — панель активна");
         title.setTextColor(Color.WHITE);
         title.setTextSize(15);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         panel.addView(title, new LinearLayout.LayoutParams(-1, -2));
 
         statusText = new TextView(this);
-        statusText.setText("Открой Мыслитель, выдай разрешение просмотра экрана, затем нажми “Анализ”.");
+        statusText.setText("Можно нажать “Анализ” вручную или включить “Live” — комментарий примерно раз в 12 секунд.");
         statusText.setTextColor(0xFFDADADA);
         statusText.setTextSize(13);
         statusText.setPadding(0, 8, 0, 8);
         panel.addView(statusText, new LinearLayout.LayoutParams(-1, -2));
 
-        LinearLayout buttons = new LinearLayout(this);
-        buttons.setOrientation(LinearLayout.HORIZONTAL);
-        buttons.setGravity(Gravity.END);
+        LinearLayout buttonsTop = new LinearLayout(this);
+        buttonsTop.setOrientation(LinearLayout.HORIZONTAL);
+        buttonsTop.setGravity(Gravity.END);
 
         Button analyzeButton = new Button(this);
         analyzeButton.setText("Анализ");
         analyzeButton.setOnClickListener(v -> MainActivity.analyzeScreenFromOverlay());
-        buttons.addView(analyzeButton, new LinearLayout.LayoutParams(0, -2, 1f));
+        buttonsTop.addView(analyzeButton, new LinearLayout.LayoutParams(0, -2, 1f));
 
         Button openButton = new Button(this);
         openButton.setText("Открыть");
@@ -89,14 +89,40 @@ public class OverlayService extends Service {
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
             startActivity(intent);
         });
-        buttons.addView(openButton, new LinearLayout.LayoutParams(0, -2, 1f));
+        buttonsTop.addView(openButton, new LinearLayout.LayoutParams(0, -2, 1f));
+        panel.addView(buttonsTop, new LinearLayout.LayoutParams(-1, -2));
+
+        LinearLayout buttonsLive = new LinearLayout(this);
+        buttonsLive.setOrientation(LinearLayout.HORIZONTAL);
+        buttonsLive.setGravity(Gravity.END);
+
+        Button liveButton = new Button(this);
+        liveButton.setText("Live");
+        liveButton.setOnClickListener(v -> MainActivity.startLiveFromOverlay());
+        buttonsLive.addView(liveButton, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        Button stopLiveButton = new Button(this);
+        stopLiveButton.setText("Стоп live");
+        stopLiveButton.setOnClickListener(v -> MainActivity.stopLiveFromOverlay());
+        buttonsLive.addView(stopLiveButton, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        panel.addView(buttonsLive, new LinearLayout.LayoutParams(-1, -2));
+
+        LinearLayout buttonsBottom = new LinearLayout(this);
+        buttonsBottom.setOrientation(LinearLayout.HORIZONTAL);
+        buttonsBottom.setGravity(Gravity.END);
+
+        Button stopCaptureButton = new Button(this);
+        stopCaptureButton.setText("Стоп просмотр");
+        stopCaptureButton.setOnClickListener(v -> MainActivity.stopScreenCaptureFromOverlay());
+        buttonsBottom.addView(stopCaptureButton, new LinearLayout.LayoutParams(0, -2, 1f));
 
         Button hideButton = new Button(this);
         hideButton.setText("Скрыть");
         hideButton.setOnClickListener(v -> stopSelf());
-        buttons.addView(hideButton, new LinearLayout.LayoutParams(0, -2, 1f));
+        buttonsBottom.addView(hideButton, new LinearLayout.LayoutParams(0, -2, 1f));
 
-        panel.addView(buttons, new LinearLayout.LayoutParams(-1, -2));
+        panel.addView(buttonsBottom, new LinearLayout.LayoutParams(-1, -2));
 
         WindowManager.LayoutParams params = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
