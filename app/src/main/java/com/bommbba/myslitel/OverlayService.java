@@ -22,7 +22,7 @@ import java.lang.ref.WeakReference;
 
 public class OverlayService extends Service {
     private static final String PREFS = "myslitel_prefs";
-    private static final String KEY_OVERLAY_Y = "overlay_y";
+    private static final String KEY_OVERLAY_TOP_Y = "overlay_top_y";
     private static WeakReference<OverlayService> activeService;
 
     private WindowManager windowManager;
@@ -76,13 +76,27 @@ public class OverlayService extends Service {
         bg.setCornerRadius(24);
         panel.setBackground(bg);
 
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+
         TextView dragHandle = new TextView(this);
-        dragHandle.setText("↕ Мыслитель 0.6 — потяни эту строку, чтобы двигать панель");
+        dragHandle.setText("↕ Мыслитель 0.6.1 — тяни эту строку или жми ↑/↓");
         dragHandle.setTextColor(Color.WHITE);
         dragHandle.setTextSize(13);
         dragHandle.setTypeface(Typeface.DEFAULT_BOLD);
-        dragHandle.setGravity(Gravity.CENTER_HORIZONTAL);
-        panel.addView(dragHandle, new LinearLayout.LayoutParams(-1, -2));
+        dragHandle.setGravity(Gravity.CENTER_VERTICAL);
+        header.addView(dragHandle, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        Button upButton = smallButton("↑");
+        upButton.setOnClickListener(v -> movePanelBy(-90));
+        header.addView(upButton, new LinearLayout.LayoutParams(-2, -2));
+
+        Button downButton = smallButton("↓");
+        downButton.setOnClickListener(v -> movePanelBy(90));
+        header.addView(downButton, new LinearLayout.LayoutParams(-2, -2));
+
+        panel.addView(header, new LinearLayout.LayoutParams(-1, -2));
 
         statusText = new TextView(this);
         statusText.setText("Напиши сообщение, нажми “Анализ” или включи “Live”. Режимы и остальные кнопки теперь в основном приложении.");
@@ -138,11 +152,11 @@ public class OverlayService extends Service {
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT
         );
-        overlayParams.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
+        overlayParams.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
         overlayParams.x = 0;
-        overlayParams.y = Math.max(0, prefs.getInt(KEY_OVERLAY_Y, 8));
+        overlayParams.y = Math.max(0, prefs.getInt(KEY_OVERLAY_TOP_Y, 0));
 
-        dragHandle.setOnTouchListener(new View.OnTouchListener() {
+        View.OnTouchListener dragListener = new View.OnTouchListener() {
             private int startY;
             private float startRawY;
             private boolean moved;
@@ -157,23 +171,53 @@ public class OverlayService extends Service {
                         moved = false;
                         return true;
                     case MotionEvent.ACTION_MOVE:
-                        int dy = Math.round(startRawY - event.getRawY());
+                        int dy = Math.round(event.getRawY() - startRawY);
                         if (Math.abs(dy) > 4) moved = true;
-                        overlayParams.y = Math.max(0, startY + dy);
-                        try { windowManager.updateViewLayout(overlayView, overlayParams); } catch (Exception ignored) {}
+                        setPanelTopY(startY + dy, false);
                         return true;
                     case MotionEvent.ACTION_UP:
                     case MotionEvent.ACTION_CANCEL:
-                        prefs.edit().putInt(KEY_OVERLAY_Y, overlayParams.y).apply();
-                        if (moved) updatePanelText("Положение панели сохранено. Потяни верхнюю строку, чтобы переместить снова.");
+                        prefs.edit().putInt(KEY_OVERLAY_TOP_Y, overlayParams.y).apply();
+                        if (moved) updatePanelText("Положение панели сохранено. Можно тянуть верхнюю строку или жать ↑/↓.");
                         return true;
                 }
                 return false;
             }
-        });
+        };
+        dragHandle.setOnTouchListener(dragListener);
+        header.setOnTouchListener(dragListener);
 
         overlayView = panel;
         windowManager.addView(overlayView, overlayParams);
+
+        overlayView.post(() -> {
+            int saved = prefs.getInt(KEY_OVERLAY_TOP_Y, -1);
+            if (saved < 0) {
+                int bottomY = getMaxPanelTopY();
+                setPanelTopY(bottomY, true);
+            } else {
+                setPanelTopY(saved, true);
+            }
+        });
+    }
+
+    private int getMaxPanelTopY() {
+        int screenHeight = getResources().getDisplayMetrics().heightPixels;
+        int panelHeight = overlayView == null ? 260 : Math.max(1, overlayView.getHeight());
+        return Math.max(0, screenHeight - panelHeight - 12);
+    }
+
+    private void setPanelTopY(int y, boolean save) {
+        if (overlayParams == null || windowManager == null || overlayView == null) return;
+        int clamped = Math.max(0, Math.min(y, getMaxPanelTopY()));
+        overlayParams.y = clamped;
+        try { windowManager.updateViewLayout(overlayView, overlayParams); } catch (Exception ignored) {}
+        if (save) prefs.edit().putInt(KEY_OVERLAY_TOP_Y, overlayParams.y).apply();
+    }
+
+    private void movePanelBy(int deltaY) {
+        setPanelTopY(overlayParams == null ? 0 : overlayParams.y + deltaY, true);
+        updatePanelText("Положение панели изменено кнопками ↑/↓. Верхнюю строку тоже можно тянуть пальцем.");
     }
 
     @Override
