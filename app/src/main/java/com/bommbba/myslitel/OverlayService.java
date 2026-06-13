@@ -81,7 +81,7 @@ public class OverlayService extends Service {
         header.setGravity(Gravity.CENTER_VERTICAL);
 
         TextView dragHandle = new TextView(this);
-        dragHandle.setText("↕ Мыслитель 0.6.1 — тяни эту строку или жми ↑/↓");
+        dragHandle.setText("↕ Мыслитель 0.6.2 — тяни эту строку или жми ↑/↓");
         dragHandle.setTextColor(Color.WHITE);
         dragHandle.setTextSize(13);
         dragHandle.setTypeface(Typeface.DEFAULT_BOLD);

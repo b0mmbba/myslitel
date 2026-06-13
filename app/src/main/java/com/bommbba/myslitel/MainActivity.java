@@ -161,20 +161,24 @@ public class MainActivity extends Activity {
         inputPricePerM = parseDoubleSafe(prefs.getString(KEY_INPUT_PRICE_PER_M, "5"), 5.0);
         outputPricePerM = parseDoubleSafe(prefs.getString(KEY_OUTPUT_PRICE_PER_M, "30"), 30.0);
 
+        ScrollView pageScroll = new ScrollView(this);
+        pageScroll.setFillViewport(false);
+
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(28, 28, 28, 28);
         root.setBackgroundColor(0xFFF7F7F7);
+        pageScroll.addView(root, new ScrollView.LayoutParams(-1, -2));
 
         TextView title = new TextView(this);
-        title.setText("Мыслитель 0.6.1");
+        title.setText("Мыслитель 0.6.2");
         title.setTextSize(26);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setGravity(Gravity.CENTER_HORIZONTAL);
         root.addView(title, new LinearLayout.LayoutParams(-1, -2));
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("Шестой прототип: панель снизу упрощена до чата + Анализ + Live/Стоп, окно можно двигать, режимы описаны понятнее, просмотр экрана можно сбрасывать, добавлен локальный счётчик бюджета API.");
+        subtitle.setText("Шестой прототип: панель снизу упрощена до чата + Анализ + Live/Стоп, окно можно двигать, режимы описаны понятнее, просмотр экрана можно сбрасывать, добавлен локальный счётчик бюджета API. В 0.6.2 исправлена прокрутка основного экрана приложения.");
         subtitle.setTextSize(14);
         subtitle.setPadding(0, 8, 0, 18);
         root.addView(subtitle, new LinearLayout.LayoutParams(-1, -2));
@@ -377,7 +381,7 @@ public class MainActivity extends Activity {
         chatLog.setText("Мыслитель: Напиши вопрос и нажми “Спросить”.\n");
         chatLog.setPadding(16, 16, 16, 16);
         scrollView.addView(chatLog);
-        LinearLayout.LayoutParams scrollParams = new LinearLayout.LayoutParams(-1, 0, 1f);
+        LinearLayout.LayoutParams scrollParams = new LinearLayout.LayoutParams(-1, dp(220));
         scrollParams.setMargins(0, 16, 0, 16);
         root.addView(scrollView, scrollParams);
 
@@ -393,13 +397,18 @@ public class MainActivity extends Activity {
         root.addView(askButton, new LinearLayout.LayoutParams(-1, -2));
 
         TextView warning = new TextView(this);
-        warning.setText("Важно: 0.6.1 не управляет телефоном. Панель остаётся overlay поверх приложений, но теперь её можно передвигать за ручку или кнопками ↑/↓ на панели. Вариант “под экраном” без клавиатуры обычный Android не даёт сделать для чужих приложений.");
+        warning.setText("Важно: 0.6.2 не управляет телефоном. Панель остаётся overlay поверх приложений, но теперь её можно передвигать за ручку или кнопками ↑/↓ на панели. Вариант “под экраном” без клавиатуры обычный Android не даёт сделать для чужих приложений.");
         warning.setTextSize(12);
         warning.setPadding(0, 12, 0, 0);
         root.addView(warning, new LinearLayout.LayoutParams(-1, -2));
 
-        setContentView(root);
+        setContentView(pageScroll);
         OverlayService.updatePanelText("Режим: " + selectedMode + ". Модель: " + MODEL + ". Контекст: " + compactContextForUi());
+    }
+
+
+    private int dp(int value) {
+        return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
     }
 
     @Override
@@ -541,7 +550,7 @@ public class MainActivity extends Activity {
             return;
         }
         startService(new Intent(this, OverlayService.class));
-        appendLog("Система: нижняя панель включена. В 0.6.1 на панели только чат, “Спросить”, “Анализ”, “Live” и “Стоп live”. Режимы и остальные настройки — в приложении.");
+        appendLog("Система: нижняя панель включена. В 0.6.2 на панели только чат, “Спросить”, “Анализ”, “Live” и “Стоп live”. Режимы и остальные настройки — в приложении.");
     }
 
     private void requestScreenCapturePermission() {
