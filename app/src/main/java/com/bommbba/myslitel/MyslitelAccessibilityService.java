@@ -115,8 +115,12 @@ public class MyslitelAccessibilityService extends AccessibilityService {
         node.getBoundsInScreen(r);
         if (!r.isEmpty()) {
             int cx = Math.max(1, r.centerX());
-            int cy = Math.max(1, r.centerY());
-            return s.gestureTap(cx, cy);
+            int labelCy = Math.max(1, r.centerY());
+            int iconCy = Math.max(1, labelCy - s.dp(58));
+            // В лаунчерах текст ярлыка часто не clickable, а сама иконка находится выше подписи.
+            // Поэтому сначала нажимаем чуть выше подписи, потом уже по центру найденного узла.
+            if (s.gestureTap(iconCy > 1 ? cx : r.centerX(), iconCy)) return true;
+            return s.gestureTap(cx, labelCy);
         }
         return false;
     }
@@ -157,6 +161,10 @@ public class MyslitelAccessibilityService extends AccessibilityService {
             if (found != null) return found;
         }
         return null;
+    }
+
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
     private boolean gestureTap(int x, int y) {

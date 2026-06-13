@@ -3,6 +3,8 @@ package com.bommbba.myslitel;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Typeface;
 import android.media.projection.MediaProjectionManager;
@@ -34,6 +36,7 @@ import java.lang.ref.WeakReference;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -49,7 +52,8 @@ public class MainActivity extends Activity {
     private static final String MODEL = "gpt-5.5";
     private static final int REQUEST_MEDIA_PROJECTION = 2303;
     private static final long LIVE_INTERVAL_MS = 12000L;
-    private static final long AUTOPILOT_INTERVAL_MS = 7000L;
+    private static final long AUTOPILOT_INTERVAL_MS = 2600L;
+    private static final int AUTOPILOT_MAX_STEPS = 12;
 
     private static final String[] MODES = new String[]{"Комментатор", "Навигатор", "Учитель", "Антиошибка", "Тихий"};
     private static WeakReference<MainActivity> activeActivity;
@@ -83,6 +87,8 @@ public class MainActivity extends Activity {
     private int liveTickCount = 0;
     private int autopilotStepCount = 0;
     private String autopilotTask = "";
+    private String lastControlSummary = "";
+    private int controlErrorStreak = 0;
     private String liveContext = "";
     private String selectedMode = "Комментатор";
     private String sessionContext = "";
@@ -206,14 +212,14 @@ public class MainActivity extends Activity {
         pageScroll.addView(root, new ScrollView.LayoutParams(-1, -2));
 
         TextView title = new TextView(this);
-        title.setText("Мыслитель 0.7.1");
+        title.setText("Мыслитель 0.7.2.1");
         title.setTextSize(26);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setGravity(Gravity.CENTER_HORIZONTAL);
         root.addView(title, new LinearLayout.LayoutParams(-1, -2));
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("Седьмой прототип 0.7.1: исправлена логика управления на рабочем столе. Добавлен action open_app, чтобы приложение могло открывать видимые ярлыки по названию, а не только тапать по координатам.");
+        subtitle.setText("Седьмой прототип 0.7.2.1: исправлена логика управления на рабочем столе. Добавлен action open_app, чтобы приложение могло открывать видимые ярлыки по названию, а не только тапать по координатам.");
         subtitle.setTextSize(14);
         subtitle.setPadding(0, 8, 0, 18);
         root.addView(subtitle, new LinearLayout.LayoutParams(-1, -2));
@@ -639,16 +645,19 @@ public class MainActivity extends Activity {
         }
         autopilotEnabled = true;
         autopilotStepCount = 0;
+        controlErrorStreak = 0;
+        lastControlSummary = "";
         autopilotTask = task;
         if (autopilotStartButton != null) autopilotStartButton.setEnabled(false);
         if (autopilotStopButton != null) autopilotStopButton.setEnabled(true);
         appendLog("Система: автопилот запущен. Задача: " + autopilotTask);
         OverlayService.updatePanelText("Автопилот запущен: " + trimForContext(autopilotTask, 90));
-        runControlStep(autopilotTask, true);
+        scheduleNextAutopilotStep(900);
     }
 
     private void stopAutopilot() {
         autopilotEnabled = false;
+        controlErrorStreak = 0;
         if (autopilotStartButton != null) autopilotStartButton.setEnabled(true);
         if (autopilotStopButton != null) autopilotStopButton.setEnabled(false);
         appendLog("Система: автопилот остановлен.");
@@ -698,34 +707,84 @@ public class MainActivity extends Activity {
         }
         if (!autopilot && messageInput != null && taskOverride == null) messageInput.setText("");
 
+        if (autopilot && autopilotStepCount >= AUTOPILOT_MAX_STEPS) {
+            appendLog("Система: автопилот остановлен по лимиту шагов. Если нужно продолжить — снова нажми “Авто”.");
+            OverlayService.updatePanelText("Авто остановлен по лимиту шагов.");
+            stopAutopilot();
+            return;
+        }
+
+        String directApp = detectOpenAppTask(task);
+        boolean alreadyTriedDirectOpen = directApp != null && lastControlSummary.toLowerCase(java.util.Locale.ROOT).contains(directApp.toLowerCase(java.util.Locale.ROOT));
+        if (directApp != null && !alreadyTriedDirectOpen) {
+            boolean packageOpen = openInstalledAppByLabel(directApp);
+            if (packageOpen) {
+                String result = "Открываю приложение: " + directApp + ".";
+                appendLog("Система: приложение открыто напрямую через список установленных приложений: " + directApp);
+                OverlayService.updatePanelText(result);
+                rememberAnswer(result, false);
+                lastControlSummary = result;
+                if (autopilot) scheduleNextAutopilotStep(AUTOPILOT_INTERVAL_MS);
+                return;
+            }
+            if (isControlReady()) {
+                boolean directOk = MyslitelAccessibilityService.openAppByLabel(directApp);
+                if (directOk) {
+                    String result = "Открываю приложение: " + directApp + ".";
+                    appendLog("Система: прямое действие выполнено по видимому ярлыку: open_app " + directApp);
+                    OverlayService.updatePanelText(result);
+                    rememberAnswer(result, false);
+                    lastControlSummary = result;
+                    if (autopilot) scheduleNextAutopilotStep(AUTOPILOT_INTERVAL_MS);
+                    return;
+                }
+            }
+        }
+
         controlRunning = true;
         if (autoStepButton != null) autoStepButton.setEnabled(false);
         if (askButton != null) askButton.setEnabled(false);
         if (autopilot) {
             autopilotStepCount++;
             appendLog("Система: автопилот, шаг #" + autopilotStepCount + "… Задача: " + task);
-            OverlayService.updatePanelText("Автопилот шаг #" + autopilotStepCount + ": смотрю экран…");
+            OverlayService.updatePanelText("Автопилот шаг #" + autopilotStepCount + ": делаю новый скрин…");
         } else {
             appendLog("Система: автошаг… Задача: " + task);
-            OverlayService.updatePanelText("Автошаг: смотрю экран и выбираю действие…");
+            OverlayService.updatePanelText("Автошаг: делаю скрин и выбираю действие…");
         }
 
         String finalTask = task;
         executor.execute(() -> {
             try {
-                Thread.sleep(450);
+                // Небольшая пауза перед скрином: Android/лаунчер/игра должны успеть отрисовать экран после прошлого действия.
+                Thread.sleep(autopilot ? 900 : 450);
                 Bitmap screenshot = ScreenCaptureService.acquireScreenshotBitmap();
                 if (screenshot == null) throw new Exception("не удалось получить кадр для управления.");
                 String dataUrl = bitmapToJpegDataUrl(screenshot);
                 screenshot.recycle();
 
-                String jsonText = callControlApiWithImage(apiKey, finalTask, dataUrl, autopilot);
-                JSONObject command = extractCommandJson(jsonText);
+                String jsonText = null;
+                JSONObject command = null;
+                Exception parseError = null;
+                for (int attempt = 1; attempt <= 2; attempt++) {
+                    try {
+                        jsonText = callControlApiWithImage(apiKey, finalTask, dataUrl, autopilot, attempt);
+                        command = extractCommandJson(jsonText);
+                        break;
+                    } catch (Exception ex) {
+                        parseError = ex;
+                    }
+                }
+                if (command == null) throw parseError == null ? new Exception("модель не вернула команду") : parseError;
+
+                controlErrorStreak = 0;
                 String say = command.optString("say", "Действие получено.").trim();
                 String action = command.optString("action", "none").trim().toLowerCase(java.util.Locale.US);
                 String risk = command.optString("risk", "safe").trim().toLowerCase(java.util.Locale.US);
+                boolean done = command.optBoolean("done", false);
 
-                runOnUiThread(() -> appendLog("Мыслитель управление: " + jsonText));
+                String finalJsonText = jsonText;
+                runOnUiThread(() -> appendLog("Мыслитель управление: " + finalJsonText));
 
                 if (!"safe".equals(risk)) {
                     runOnUiThread(() -> {
@@ -742,12 +801,18 @@ public class MainActivity extends Activity {
                     appendLog("Система: " + (ok ? "выполнено" : "не выполнено") + ": " + action);
                     OverlayService.updatePanelText(result);
                     rememberAnswer(result, false);
+                    lastControlSummary = "Шаг " + autopilotStepCount + ": action=" + action + ", ok=" + ok + ", say=" + result;
+                    if (done) {
+                        appendLog("Система: модель считает задачу завершённой.");
+                        if (autopilot) stopAutopilot();
+                    }
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
+                    controlErrorStreak++;
                     appendLog("Ошибка управления: " + e.getMessage());
                     OverlayService.updatePanelText("Ошибка управления: " + e.getMessage());
-                    if (autopilot) stopAutopilot();
+                    if (autopilot && controlErrorStreak >= 2) stopAutopilot();
                 });
             } finally {
                 runOnUiThread(() -> {
@@ -760,25 +825,79 @@ public class MainActivity extends Activity {
         });
     }
 
-    private String callControlApiWithImage(String apiKey, String task, String imageDataUrl, boolean autopilot) throws Exception {
+    private String detectOpenAppTask(String task) {
+        if (task == null) return null;
+        String lower = task.trim().toLowerCase(java.util.Locale.ROOT);
+        if (lower.isEmpty()) return null;
+        boolean openIntent = lower.contains("открой") || lower.contains("запусти") || lower.contains("включи") || lower.contains("найди и открой");
+        if (!openIntent) return null;
+        if (lower.contains("шахмат")) return "Шахматы";
+        String[] keys = new String[]{"открой", "запусти", "включи"};
+        for (String key : keys) {
+            int idx = lower.indexOf(key);
+            if (idx >= 0) {
+                String rest = task.substring(Math.min(task.length(), idx + key.length())).trim();
+                rest = rest.replaceAll("(?i)^(приложение|апп|app)\\s+", "").trim();
+                if (!rest.isEmpty() && rest.length() <= 40) return rest;
+            }
+        }
+        return null;
+    }
+
+    private boolean openInstalledAppByLabel(String appName) {
+        if (appName == null || appName.trim().isEmpty()) return false;
+        String needle = appName.trim().toLowerCase(java.util.Locale.ROOT);
+        try {
+            PackageManager pm = getPackageManager();
+            List<ApplicationInfo> apps = pm.getInstalledApplications(0);
+            ApplicationInfo best = null;
+            for (ApplicationInfo info : apps) {
+                Intent launchIntent = pm.getLaunchIntentForPackage(info.packageName);
+                if (launchIntent == null) continue;
+                CharSequence labelSeq = pm.getApplicationLabel(info);
+                String label = labelSeq == null ? "" : labelSeq.toString().trim().toLowerCase(java.util.Locale.ROOT);
+                if (label.isEmpty()) continue;
+                if (label.equals(needle)) {
+                    best = info;
+                    break;
+                }
+                if (best == null && (label.contains(needle) || needle.contains(label))) best = info;
+            }
+            if (best == null) return false;
+            Intent launch = pm.getLaunchIntentForPackage(best.packageName);
+            if (launch == null) return false;
+            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(launch);
+            return true;
+        } catch (Exception e) {
+            appendLog("Система: не удалось открыть приложение напрямую: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private String callControlApiWithImage(String apiKey, String task, String imageDataUrl, boolean autopilot, int attempt) throws Exception {
         String controlPrompt = "" +
                 "Ты управляешь Android-телефоном пользователя через приложение Мыслитель. " +
                 "У тебя есть текущий скриншот. Верни строго один JSON без markdown и без пояснений вокруг. " +
                 "Координаты x/y/x2/y2 указывай в нормализованной системе 0..1000, где 0,0 — левый верх экрана. " +
                 "Доступные action: open_app, tap, swipe, scroll_down, scroll_up, type, back, home, none. " +
-                "Если задача — открыть приложение, и ярлык/название приложения видно на экране, предпочитай action open_app с полем app, например {\"action\":\"open_app\",\"app\":\"Шахматы\"}. " +
+                "Если задача — открыть приложение, и ярлык/название приложения видно на экране, предпочитай action open_app с полем app, например {\"action\":\"open_app\",\"app\":\"Шахматы\",\"risk\":\"safe\",\"done\":false}. " +
                 "Если нужное приложение не видно на текущей странице лаунчера, используй scroll_down или scroll_up. " +
                 "tap используй только если ты уверен в координатах нужной кнопки/иконки. " +
                 "type используй только если на экране уже активно текстовое поле. " +
                 "Для scroll_down будет свайп вверх, чтобы список пошёл вниз; для scroll_up будет свайп вниз. " +
                 "Если видишь банк, оплату, пароль, 2FA, личную переписку, удаление данных, покупку или другое опасное действие — верни action none и risk blocked. " +
                 "Если не уверен — action none. " +
-                "Формат: {\"say\":\"коротко по-русски что делаю\",\"action\":\"open_app|tap|swipe|scroll_down|scroll_up|type|back|home|none\",\"app\":\"\",\"x\":500,\"y\":500,\"x2\":500,\"y2\":300,\"text\":\"\",\"risk\":\"safe|blocked\"}";
+                "После каждого действия приложение само подождёт и пришлёт новый скриншот, поэтому выбирай только один следующий шаг. " +
+                "Если задача явно завершена на текущем экране — поставь done true и action none. Иначе done false. " +
+                "Формат: {\"say\":\"коротко по-русски что делаю\",\"action\":\"open_app|tap|swipe|scroll_down|scroll_up|type|back|home|none\",\"app\":\"\",\"x\":500,\"y\":500,\"x2\":500,\"y2\":300,\"text\":\"\",\"risk\":\"safe|blocked\",\"done\":false}";
 
         String userText = "Режим: " + selectedMode + "\n" +
                 "Инструкция режима: " + modeInstruction() + "\n" +
                 "Контекст пользователя: " + (sessionContext.isEmpty() ? "пока нет" : sessionContext) + "\n" +
                 "Предыдущий контекст: " + (liveContext.isEmpty() ? "пока нет" : liveContext) + "\n" +
+                "Предыдущее действие управления: " + (lastControlSummary.isEmpty() ? "пока нет" : lastControlSummary) + "\n" +
+                "Попытка запроса JSON: " + attempt + " из 2. Если это повторная попытка, верни именно JSON, даже если действие none.\n" +
                 "Задача пользователя: " + task + "\n" +
                 "Это " + (autopilot ? "шаг автопилота" : "один автошаг") + ". Выбери только одно безопасное действие.";
 
