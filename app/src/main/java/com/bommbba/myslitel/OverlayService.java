@@ -15,9 +15,20 @@ import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import java.lang.ref.WeakReference;
+
 public class OverlayService extends Service {
+    private static WeakReference<OverlayService> activeService;
+
     private WindowManager windowManager;
     private View overlayView;
+    private TextView statusText;
+
+    public static void updatePanelText(String text) {
+        OverlayService service = activeService == null ? null : activeService.get();
+        if (service == null || service.statusText == null) return;
+        service.statusText.post(() -> service.statusText.setText(text));
+    }
 
     @Override
     public IBinder onBind(Intent intent) {
@@ -27,6 +38,7 @@ public class OverlayService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        activeService = new WeakReference<>(this);
         createOverlay();
     }
 
@@ -48,22 +60,27 @@ public class OverlayService extends Service {
         panel.setBackground(bg);
 
         TextView title = new TextView(this);
-        title.setText("Мыслитель 0.2 — панель активна");
+        title.setText("Мыслитель 0.3 — панель активна");
         title.setTextColor(Color.WHITE);
         title.setTextSize(15);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         panel.addView(title, new LinearLayout.LayoutParams(-1, -2));
 
-        TextView status = new TextView(this);
-        status.setText("Пока я не вижу экран. Это тест нижней панели поверх других приложений.");
-        status.setTextColor(0xFFDADADA);
-        status.setTextSize(13);
-        status.setPadding(0, 8, 0, 8);
-        panel.addView(status, new LinearLayout.LayoutParams(-1, -2));
+        statusText = new TextView(this);
+        statusText.setText("Открой Мыслитель, выдай разрешение просмотра экрана, затем нажми “Анализ”.");
+        statusText.setTextColor(0xFFDADADA);
+        statusText.setTextSize(13);
+        statusText.setPadding(0, 8, 0, 8);
+        panel.addView(statusText, new LinearLayout.LayoutParams(-1, -2));
 
         LinearLayout buttons = new LinearLayout(this);
         buttons.setOrientation(LinearLayout.HORIZONTAL);
         buttons.setGravity(Gravity.END);
+
+        Button analyzeButton = new Button(this);
+        analyzeButton.setText("Анализ");
+        analyzeButton.setOnClickListener(v -> MainActivity.analyzeScreenFromOverlay());
+        buttons.addView(analyzeButton, new LinearLayout.LayoutParams(0, -2, 1f));
 
         Button openButton = new Button(this);
         openButton.setText("Открыть");
@@ -107,6 +124,9 @@ public class OverlayService extends Service {
             } catch (Exception ignored) {
             }
             overlayView = null;
+        }
+        if (activeService != null && activeService.get() == this) {
+            activeService = null;
         }
     }
 }
