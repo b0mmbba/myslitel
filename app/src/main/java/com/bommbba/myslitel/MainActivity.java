@@ -49,6 +49,7 @@ public class MainActivity extends Activity {
     private static final String MODEL = "gpt-5.5";
     private static final int REQUEST_MEDIA_PROJECTION = 2303;
     private static final long LIVE_INTERVAL_MS = 12000L;
+    private static final long AUTOPILOT_INTERVAL_MS = 7000L;
 
     private static final String[] MODES = new String[]{"Комментатор", "Навигатор", "Учитель", "Антиошибка", "Тихий"};
     private static WeakReference<MainActivity> activeActivity;
@@ -66,6 +67,9 @@ public class MainActivity extends Activity {
     private Button analyzeButton;
     private Button liveStartButton;
     private Button liveStopButton;
+    private Button autoStepButton;
+    private Button autopilotStartButton;
+    private Button autopilotStopButton;
     private Spinner modeSpinner;
 
     private MediaProjectionManager projectionManager;
@@ -74,7 +78,11 @@ public class MainActivity extends Activity {
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private boolean liveModeEnabled = false;
     private boolean analysisRunning = false;
+    private boolean controlRunning = false;
+    private boolean autopilotEnabled = false;
     private int liveTickCount = 0;
+    private int autopilotStepCount = 0;
+    private String autopilotTask = "";
     private String liveContext = "";
     private String selectedMode = "Комментатор";
     private String sessionContext = "";
@@ -128,6 +136,33 @@ public class MainActivity extends Activity {
         activity.runOnUiThread(activity::stopLiveMode);
     }
 
+    public static void autoStepFromOverlay(String task) {
+        MainActivity activity = getActiveActivity();
+        if (activity == null) {
+            OverlayService.updatePanelText("Открой Мыслитель, включи просмотр экрана и управление, потом снова нажми Автошаг.");
+            return;
+        }
+        activity.runOnUiThread(() -> activity.runControlStep(task, false));
+    }
+
+    public static void startAutopilotFromOverlay(String task) {
+        MainActivity activity = getActiveActivity();
+        if (activity == null) {
+            OverlayService.updatePanelText("Открой Мыслитель, включи просмотр экрана и управление, потом запускай Авто.");
+            return;
+        }
+        activity.runOnUiThread(() -> activity.startAutopilot(task));
+    }
+
+    public static void stopAutopilotFromOverlay() {
+        MainActivity activity = getActiveActivity();
+        if (activity == null) {
+            OverlayService.updatePanelText("Автопилот остановлен, если приложение активно.");
+            return;
+        }
+        activity.runOnUiThread(activity::stopAutopilot);
+    }
+
     public static void stopScreenCaptureFromOverlay() {
         MainActivity activity = getActiveActivity();
         if (activity == null) {
@@ -171,14 +206,14 @@ public class MainActivity extends Activity {
         pageScroll.addView(root, new ScrollView.LayoutParams(-1, -2));
 
         TextView title = new TextView(this);
-        title.setText("Мыслитель 0.6.2");
+        title.setText("Мыслитель 0.7");
         title.setTextSize(26);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setGravity(Gravity.CENTER_HORIZONTAL);
         root.addView(title, new LinearLayout.LayoutParams(-1, -2));
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("Шестой прототип: панель снизу упрощена до чата + Анализ + Live/Стоп, окно можно двигать, режимы описаны понятнее, просмотр экрана можно сбрасывать, добавлен локальный счётчик бюджета API. В 0.6.2 исправлена прокрутка основного экрана приложения.");
+        subtitle.setText("Седьмой прототип: нижняя панель очищена от системных надписей и кнопок ↑/↓, добавлен безопасный режим управления телефоном через Accessibility: Автошаг и осторожный Автопилот.");
         subtitle.setTextSize(14);
         subtitle.setPadding(0, 8, 0, 18);
         root.addView(subtitle, new LinearLayout.LayoutParams(-1, -2));
@@ -375,6 +410,39 @@ public class MainActivity extends Activity {
         liveStopButton.setEnabled(false);
         root.addView(liveStopButton, new LinearLayout.LayoutParams(-1, -2));
 
+        TextView controlTitle = new TextView(this);
+        controlTitle.setText("Управление телефоном:");
+        controlTitle.setTextSize(15);
+        controlTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        controlTitle.setPadding(0, 18, 0, 4);
+        root.addView(controlTitle, new LinearLayout.LayoutParams(-1, -2));
+
+        TextView controlNote = new TextView(this);
+        controlNote.setText("Работает через специальное разрешение Android Accessibility. Для безопасности команда должна быть записана в поле сообщения. Опасные действия модель должна блокировать.");
+        controlNote.setTextSize(12);
+        root.addView(controlNote, new LinearLayout.LayoutParams(-1, -2));
+
+        Button accessibilityButton = new Button(this);
+        accessibilityButton.setText("6. Разрешить управление телефоном");
+        accessibilityButton.setOnClickListener(v -> requestAccessibilityPermission());
+        root.addView(accessibilityButton, new LinearLayout.LayoutParams(-1, -2));
+
+        autoStepButton = new Button(this);
+        autoStepButton.setText("7. Автошаг: ИИ выполнит 1 действие");
+        autoStepButton.setOnClickListener(v -> runControlStep(null, false));
+        root.addView(autoStepButton, new LinearLayout.LayoutParams(-1, -2));
+
+        autopilotStartButton = new Button(this);
+        autopilotStartButton.setText("Запустить автопилот осторожно");
+        autopilotStartButton.setOnClickListener(v -> startAutopilot(null));
+        root.addView(autopilotStartButton, new LinearLayout.LayoutParams(-1, -2));
+
+        autopilotStopButton = new Button(this);
+        autopilotStopButton.setText("Остановить автопилот");
+        autopilotStopButton.setEnabled(false);
+        autopilotStopButton.setOnClickListener(v -> stopAutopilot());
+        root.addView(autopilotStopButton, new LinearLayout.LayoutParams(-1, -2));
+
         ScrollView scrollView = new ScrollView(this);
         chatLog = new TextView(this);
         chatLog.setTextSize(15);
@@ -397,7 +465,7 @@ public class MainActivity extends Activity {
         root.addView(askButton, new LinearLayout.LayoutParams(-1, -2));
 
         TextView warning = new TextView(this);
-        warning.setText("Важно: 0.6.2 не управляет телефоном. Панель остаётся overlay поверх приложений, но теперь её можно передвигать за ручку или кнопками ↑/↓ на панели. Вариант “под экраном” без клавиатуры обычный Android не даёт сделать для чужих приложений.");
+        warning.setText("Важно: 0.7 умеет пробовать управлять телефоном только после отдельного разрешения Accessibility. Держи кнопку “Остановить автопилот” доступной, не запускай на банках, платежах, паролях, 2FA и личных переписках. Панель можно двигать перетаскиванием верхней/пустой области, но кнопок ↑/↓ на ней больше нет.");
         warning.setTextSize(12);
         warning.setPadding(0, 12, 0, 0);
         root.addView(warning, new LinearLayout.LayoutParams(-1, -2));
@@ -533,6 +601,228 @@ public class MainActivity extends Activity {
         } catch (Exception ignored) {}
     }
 
+    private void requestAccessibilityPermission() {
+        appendLog("Система: открою настройки специальных возможностей. Найди “Мыслитель — управление телефоном” и включи. После этого вернись назад.");
+        OverlayService.updatePanelText("Включи управление в специальных возможностях Android.");
+        Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
+        startActivity(intent);
+    }
+
+    private boolean isControlReady() {
+        return MyslitelAccessibilityService.isReady();
+    }
+
+    private String currentTaskFromFieldOrDefault(String override) {
+        String task = override == null ? "" : override.trim();
+        if (task.isEmpty() && messageInput != null) task = messageInput.getText().toString().trim();
+        if (task.isEmpty()) task = sessionContext == null ? "" : sessionContext.trim();
+        return task;
+    }
+
+    private void startAutopilot(String taskOverride) {
+        String task = currentTaskFromFieldOrDefault(taskOverride);
+        if (task.isEmpty()) {
+            appendLog("Система: сначала напиши задачу для автопилота. Например: “открой настройки Wi‑Fi” или “пролистай вниз до нужного пункта”.");
+            OverlayService.updatePanelText("Напиши задачу для автопилота в чате панели.");
+            return;
+        }
+        if (!ScreenCaptureService.isReady()) {
+            appendLog("Система: сначала разреши просмотр экрана.");
+            OverlayService.updatePanelText("Сначала разреши просмотр экрана.");
+            return;
+        }
+        if (!isControlReady()) {
+            appendLog("Система: сначала включи управление телефоном в специальных возможностях.");
+            OverlayService.updatePanelText("Сначала включи Accessibility-управление.");
+            requestAccessibilityPermission();
+            return;
+        }
+        autopilotEnabled = true;
+        autopilotStepCount = 0;
+        autopilotTask = task;
+        if (autopilotStartButton != null) autopilotStartButton.setEnabled(false);
+        if (autopilotStopButton != null) autopilotStopButton.setEnabled(true);
+        appendLog("Система: автопилот запущен. Задача: " + autopilotTask);
+        OverlayService.updatePanelText("Автопилот запущен: " + trimForContext(autopilotTask, 90));
+        runControlStep(autopilotTask, true);
+    }
+
+    private void stopAutopilot() {
+        autopilotEnabled = false;
+        if (autopilotStartButton != null) autopilotStartButton.setEnabled(true);
+        if (autopilotStopButton != null) autopilotStopButton.setEnabled(false);
+        appendLog("Система: автопилот остановлен.");
+        OverlayService.updatePanelText("Автопилот остановлен.");
+    }
+
+    private void scheduleNextAutopilotStep(long delayMs) {
+        mainHandler.postDelayed(() -> {
+            if (autopilotEnabled) runControlStep(autopilotTask, true);
+        }, delayMs);
+    }
+
+    private void runControlStep(String taskOverride, boolean autopilot) {
+        String apiKey = apiKeyInput.getText().toString().trim();
+        if (apiKey.isEmpty()) {
+            appendLog("Система: сначала вставь OpenAI API key.");
+            OverlayService.updatePanelText("Сначала сохрани API key.");
+            if (autopilot) stopAutopilot();
+            return;
+        }
+        if (!ScreenCaptureService.isReady()) {
+            appendLog("Система: сначала разреши просмотр экрана.");
+            OverlayService.updatePanelText("Сначала разреши просмотр экрана.");
+            if (autopilot) stopAutopilot();
+            return;
+        }
+        if (!isControlReady()) {
+            appendLog("Система: сначала включи управление телефоном в специальных возможностях Android.");
+            OverlayService.updatePanelText("Сначала включи Accessibility-управление.");
+            if (autopilot) stopAutopilot();
+            requestAccessibilityPermission();
+            return;
+        }
+        if (controlRunning || analysisRunning) {
+            if (autopilot) scheduleNextAutopilotStep(2500);
+            else appendLog("Система: уже идёт анализ/действие. Подожди пару секунд.");
+            return;
+        }
+        saveContextFromField();
+        readBudgetSettingsFromFields();
+        String task = currentTaskFromFieldOrDefault(taskOverride);
+        if (task.isEmpty()) {
+            appendLog("Система: напиши задачу для управления. Без задачи ИИ не будет нажимать сам.");
+            OverlayService.updatePanelText("Напиши задачу: что надо сделать на телефоне.");
+            if (autopilot) stopAutopilot();
+            return;
+        }
+        if (!autopilot && messageInput != null && taskOverride == null) messageInput.setText("");
+
+        controlRunning = true;
+        if (autoStepButton != null) autoStepButton.setEnabled(false);
+        if (askButton != null) askButton.setEnabled(false);
+        if (autopilot) {
+            autopilotStepCount++;
+            appendLog("Система: автопилот, шаг #" + autopilotStepCount + "… Задача: " + task);
+            OverlayService.updatePanelText("Автопилот шаг #" + autopilotStepCount + ": смотрю экран…");
+        } else {
+            appendLog("Система: автошаг… Задача: " + task);
+            OverlayService.updatePanelText("Автошаг: смотрю экран и выбираю действие…");
+        }
+
+        String finalTask = task;
+        executor.execute(() -> {
+            try {
+                Thread.sleep(450);
+                Bitmap screenshot = ScreenCaptureService.acquireScreenshotBitmap();
+                if (screenshot == null) throw new Exception("не удалось получить кадр для управления.");
+                String dataUrl = bitmapToJpegDataUrl(screenshot);
+                screenshot.recycle();
+
+                String jsonText = callControlApiWithImage(apiKey, finalTask, dataUrl, autopilot);
+                JSONObject command = extractCommandJson(jsonText);
+                String say = command.optString("say", "Действие получено.").trim();
+                String action = command.optString("action", "none").trim().toLowerCase(java.util.Locale.US);
+                String risk = command.optString("risk", "safe").trim().toLowerCase(java.util.Locale.US);
+
+                runOnUiThread(() -> appendLog("Мыслитель управление: " + jsonText));
+
+                if (!"safe".equals(risk)) {
+                    runOnUiThread(() -> {
+                        appendLog("Система: действие не выполнено, потому что risk=" + risk + ".");
+                        OverlayService.updatePanelText(say.isEmpty() ? "Действие заблокировано." : say);
+                    });
+                    if (autopilot) runOnUiThread(this::stopAutopilot);
+                    return;
+                }
+
+                boolean ok = executeAccessibilityCommand(command);
+                runOnUiThread(() -> {
+                    String result = say.isEmpty() ? (ok ? "Действие выполнено." : "Не удалось выполнить действие.") : say;
+                    appendLog("Система: " + (ok ? "выполнено" : "не выполнено") + ": " + action);
+                    OverlayService.updatePanelText(result);
+                    rememberAnswer(result, false);
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    appendLog("Ошибка управления: " + e.getMessage());
+                    OverlayService.updatePanelText("Ошибка управления: " + e.getMessage());
+                    if (autopilot) stopAutopilot();
+                });
+            } finally {
+                runOnUiThread(() -> {
+                    controlRunning = false;
+                    if (autoStepButton != null) autoStepButton.setEnabled(true);
+                    if (askButton != null) askButton.setEnabled(true);
+                    if (autopilot && autopilotEnabled) scheduleNextAutopilotStep(AUTOPILOT_INTERVAL_MS);
+                });
+            }
+        });
+    }
+
+    private String callControlApiWithImage(String apiKey, String task, String imageDataUrl, boolean autopilot) throws Exception {
+        String controlPrompt = "" +
+                "Ты управляешь Android-телефоном пользователя через приложение Мыслитель. " +
+                "У тебя есть текущий скриншот. Верни строго один JSON без markdown и без пояснений вокруг. " +
+                "Координаты x/y/x2/y2 указывай в нормализованной системе 0..1000, где 0,0 — левый верх экрана. " +
+                "Доступные action: tap, swipe, scroll_down, scroll_up, type, back, home, none. " +
+                "type используй только если на экране уже активно текстовое поле. " +
+                "Для scroll_down будет свайп вверх, чтобы список пошёл вниз; для scroll_up будет свайп вниз. " +
+                "Если видишь банк, оплату, пароль, 2FA, личную переписку, удаление данных, покупку или другое опасное действие — верни action none и risk blocked. " +
+                "Если не уверен — action none. " +
+                "Формат: {\"say\":\"коротко по-русски что делаю\",\"action\":\"tap|swipe|scroll_down|scroll_up|type|back|home|none\",\"x\":500,\"y\":500,\"x2\":500,\"y2\":300,\"text\":\"\",\"risk\":\"safe|blocked\"}";
+
+        String userText = "Режим: " + selectedMode + "\n" +
+                "Инструкция режима: " + modeInstruction() + "\n" +
+                "Контекст пользователя: " + (sessionContext.isEmpty() ? "пока нет" : sessionContext) + "\n" +
+                "Предыдущий контекст: " + (liveContext.isEmpty() ? "пока нет" : liveContext) + "\n" +
+                "Задача пользователя: " + task + "\n" +
+                "Это " + (autopilot ? "шаг автопилота" : "один автошаг") + ". Выбери только одно безопасное действие.";
+
+        JSONArray input = new JSONArray();
+        input.put(new JSONObject()
+                .put("role", "system")
+                .put("content", new JSONArray().put(new JSONObject()
+                        .put("type", "input_text")
+                        .put("text", controlPrompt))));
+        input.put(new JSONObject()
+                .put("role", "user")
+                .put("content", new JSONArray()
+                        .put(new JSONObject().put("type", "input_text").put("text", userText))
+                        .put(new JSONObject().put("type", "input_image").put("image_url", imageDataUrl))));
+
+        JSONObject payload = new JSONObject()
+                .put("model", MODEL)
+                .put("input", input)
+                .put("max_output_tokens", 260);
+        return postToResponsesApi(apiKey, payload);
+    }
+
+    private JSONObject extractCommandJson(String text) throws Exception {
+        if (text == null) throw new Exception("пустой ответ модели");
+        String t = text.trim();
+        if (t.startsWith("```")) {
+            t = t.replace("```json", "").replace("```", "").trim();
+        }
+        int start = t.indexOf('{');
+        int end = t.lastIndexOf('}');
+        if (start < 0 || end <= start) throw new Exception("модель не вернула JSON: " + trimForContext(text, 300));
+        return new JSONObject(t.substring(start, end + 1));
+    }
+
+    private boolean executeAccessibilityCommand(JSONObject command) {
+        String action = command.optString("action", "none").trim().toLowerCase(java.util.Locale.US);
+        if ("none".equals(action)) return true;
+        if ("tap".equals(action)) return MyslitelAccessibilityService.tapNormalized(command.optInt("x", 500), command.optInt("y", 500));
+        if ("swipe".equals(action)) return MyslitelAccessibilityService.swipeNormalized(command.optInt("x", 500), command.optInt("y", 750), command.optInt("x2", 500), command.optInt("y2", 250), 450);
+        if ("scroll_down".equals(action)) return MyslitelAccessibilityService.scrollDown();
+        if ("scroll_up".equals(action)) return MyslitelAccessibilityService.scrollUp();
+        if ("type".equals(action)) return MyslitelAccessibilityService.typeText(command.optString("text", ""));
+        if ("back".equals(action)) return MyslitelAccessibilityService.back();
+        if ("home".equals(action)) return MyslitelAccessibilityService.home();
+        return false;
+    }
+
     private void requestOverlayPermission() {
         if (Settings.canDrawOverlays(this)) {
             appendLog("Система: разрешение уже включено. Теперь нажми “Включить нижнюю панель”.");
@@ -550,7 +840,7 @@ public class MainActivity extends Activity {
             return;
         }
         startService(new Intent(this, OverlayService.class));
-        appendLog("Система: нижняя панель включена. В 0.6.2 на панели только чат, “Спросить”, “Анализ”, “Live” и “Стоп live”. Режимы и остальные настройки — в приложении.");
+        appendLog("Система: нижняя панель включена. В 0.7 на панели только чат и кнопки: Спросить, Анализ, Live/Стоп, Автошаг/Авто/Стоп.");
     }
 
     private void requestScreenCapturePermission() {

@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Мыслитель</string>
+    <string name="accessibility_service_description">Разрешает Мыслителю выполнять нажатия, свайпы, прокрутку и ввод текста только по команде пользователя внутри приложения.</string>
+</resources>

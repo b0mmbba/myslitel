@@ -5,7 +5,6 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
-import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.IBinder;
 import android.provider.Settings;
@@ -35,7 +34,7 @@ public class OverlayService extends Service {
     public static void updatePanelText(String text) {
         OverlayService service = activeService == null ? null : activeService.get();
         if (service == null || service.statusText == null) return;
-        service.statusText.post(() -> service.statusText.setText(text));
+        service.statusText.post(() -> service.statusText.setText(text == null ? "" : text));
     }
 
     @Override
@@ -54,8 +53,11 @@ public class OverlayService extends Service {
     private Button smallButton(String text) {
         Button button = new Button(this);
         button.setText(text);
-        button.setTextSize(11);
+        button.setTextSize(10);
         button.setAllCaps(false);
+        button.setMinHeight(0);
+        button.setMinimumHeight(0);
+        button.setPadding(4, 4, 4, 4);
         return button;
     }
 
@@ -69,44 +71,24 @@ public class OverlayService extends Service {
 
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setPadding(18, 12, 18, 12);
+        panel.setPadding(12, 8, 12, 8);
 
         GradientDrawable bg = new GradientDrawable();
         bg.setColor(0xF0222222);
-        bg.setCornerRadius(24);
+        bg.setCornerRadius(22);
         panel.setBackground(bg);
 
-        LinearLayout header = new LinearLayout(this);
-        header.setOrientation(LinearLayout.HORIZONTAL);
-        header.setGravity(Gravity.CENTER_VERTICAL);
-
-        TextView dragHandle = new TextView(this);
-        dragHandle.setText("↕ Мыслитель 0.6.2 — тяни эту строку или жми ↑/↓");
-        dragHandle.setTextColor(Color.WHITE);
-        dragHandle.setTextSize(13);
-        dragHandle.setTypeface(Typeface.DEFAULT_BOLD);
-        dragHandle.setGravity(Gravity.CENTER_VERTICAL);
-        header.addView(dragHandle, new LinearLayout.LayoutParams(0, -2, 1f));
-
-        Button upButton = smallButton("↑");
-        upButton.setOnClickListener(v -> movePanelBy(-90));
-        header.addView(upButton, new LinearLayout.LayoutParams(-2, -2));
-
-        Button downButton = smallButton("↓");
-        downButton.setOnClickListener(v -> movePanelBy(90));
-        header.addView(downButton, new LinearLayout.LayoutParams(-2, -2));
-
-        panel.addView(header, new LinearLayout.LayoutParams(-1, -2));
-
         statusText = new TextView(this);
-        statusText.setText("Напиши сообщение, нажми “Анализ” или включи “Live”. Режимы и остальные кнопки теперь в основном приложении.");
-        statusText.setTextColor(0xFFDADADA);
+        statusText.setText("");
+        statusText.setTextColor(0xFFEDEDED);
         statusText.setTextSize(12);
-        statusText.setPadding(0, 6, 0, 6);
+        statusText.setMinLines(1);
+        statusText.setMaxLines(3);
+        statusText.setPadding(0, 0, 0, 4);
         panel.addView(statusText, new LinearLayout.LayoutParams(-1, -2));
 
         quickInput = new EditText(this);
-        quickInput.setHint("Напиши Мыслителю… например: запомни, что я тестирую live");
+        quickInput.setHint("Напиши задачу или вопрос…");
         quickInput.setSingleLine(false);
         quickInput.setMinLines(1);
         quickInput.setMaxLines(2);
@@ -115,35 +97,66 @@ public class OverlayService extends Service {
         quickInput.setTextSize(13);
         panel.addView(quickInput, new LinearLayout.LayoutParams(-1, -2));
 
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout row1 = new LinearLayout(this);
+        row1.setOrientation(LinearLayout.HORIZONTAL);
 
         Button sendButton = smallButton("Спросить");
         sendButton.setOnClickListener(v -> {
             String text = quickInput.getText().toString().trim();
             if (text.isEmpty()) {
-                updatePanelText("Напиши сообщение в поле выше.");
+                updatePanelText("Напиши сообщение.");
                 return;
             }
             quickInput.setText("");
-            updatePanelText("Отправляю сообщение с учётом текущего экрана…");
+            updatePanelText("Думаю…");
             MainActivity.askFromOverlay(text);
         });
-        row.addView(sendButton, new LinearLayout.LayoutParams(0, -2, 1f));
+        row1.addView(sendButton, new LinearLayout.LayoutParams(0, -2, 1f));
 
         Button analyzeButton = smallButton("Анализ");
         analyzeButton.setOnClickListener(v -> MainActivity.analyzeScreenFromOverlay());
-        row.addView(analyzeButton, new LinearLayout.LayoutParams(0, -2, 1f));
+        row1.addView(analyzeButton, new LinearLayout.LayoutParams(0, -2, 1f));
 
         Button liveButton = smallButton("Live");
         liveButton.setOnClickListener(v -> MainActivity.startLiveFromOverlay());
-        row.addView(liveButton, new LinearLayout.LayoutParams(0, -2, 1f));
+        row1.addView(liveButton, new LinearLayout.LayoutParams(0, -2, 1f));
 
-        Button stopLiveButton = smallButton("Стоп live");
+        Button stopLiveButton = smallButton("Стоп");
         stopLiveButton.setOnClickListener(v -> MainActivity.stopLiveFromOverlay());
-        row.addView(stopLiveButton, new LinearLayout.LayoutParams(0, -2, 1f));
+        row1.addView(stopLiveButton, new LinearLayout.LayoutParams(0, -2, 1f));
 
-        panel.addView(row, new LinearLayout.LayoutParams(-1, -2));
+        panel.addView(row1, new LinearLayout.LayoutParams(-1, -2));
+
+        LinearLayout row2 = new LinearLayout(this);
+        row2.setOrientation(LinearLayout.HORIZONTAL);
+
+        Button autoStepButton = smallButton("Автошаг");
+        autoStepButton.setOnClickListener(v -> {
+            String task = quickInput.getText().toString().trim();
+            if (!task.isEmpty()) quickInput.setText("");
+            updatePanelText("Автошаг…");
+            MainActivity.autoStepFromOverlay(task);
+        });
+        row2.addView(autoStepButton, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        Button autoButton = smallButton("Авто");
+        autoButton.setOnClickListener(v -> {
+            String task = quickInput.getText().toString().trim();
+            if (!task.isEmpty()) quickInput.setText("");
+            updatePanelText("Авто…");
+            MainActivity.startAutopilotFromOverlay(task);
+        });
+        row2.addView(autoButton, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        Button stopAutoButton = smallButton("Стоп авто");
+        stopAutoButton.setOnClickListener(v -> MainActivity.stopAutopilotFromOverlay());
+        row2.addView(stopAutoButton, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        Button hideButton = smallButton("Скрыть");
+        hideButton.setOnClickListener(v -> stopSelf());
+        row2.addView(hideButton, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        panel.addView(row2, new LinearLayout.LayoutParams(-1, -2));
 
         overlayParams = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -172,38 +185,33 @@ public class OverlayService extends Service {
                         return true;
                     case MotionEvent.ACTION_MOVE:
                         int dy = Math.round(event.getRawY() - startRawY);
-                        if (Math.abs(dy) > 4) moved = true;
+                        if (Math.abs(dy) > 6) moved = true;
                         setPanelTopY(startY + dy, false);
                         return true;
                     case MotionEvent.ACTION_UP:
                     case MotionEvent.ACTION_CANCEL:
                         prefs.edit().putInt(KEY_OVERLAY_TOP_Y, overlayParams.y).apply();
-                        if (moved) updatePanelText("Положение панели сохранено. Можно тянуть верхнюю строку или жать ↑/↓.");
-                        return true;
+                        return moved;
                 }
                 return false;
             }
         };
-        dragHandle.setOnTouchListener(dragListener);
-        header.setOnTouchListener(dragListener);
+        statusText.setOnTouchListener(dragListener);
+        panel.setOnTouchListener(dragListener);
 
         overlayView = panel;
         windowManager.addView(overlayView, overlayParams);
 
         overlayView.post(() -> {
             int saved = prefs.getInt(KEY_OVERLAY_TOP_Y, -1);
-            if (saved < 0) {
-                int bottomY = getMaxPanelTopY();
-                setPanelTopY(bottomY, true);
-            } else {
-                setPanelTopY(saved, true);
-            }
+            if (saved < 0) setPanelTopY(getMaxPanelTopY(), true);
+            else setPanelTopY(saved, true);
         });
     }
 
     private int getMaxPanelTopY() {
         int screenHeight = getResources().getDisplayMetrics().heightPixels;
-        int panelHeight = overlayView == null ? 260 : Math.max(1, overlayView.getHeight());
+        int panelHeight = overlayView == null ? 250 : Math.max(1, overlayView.getHeight());
         return Math.max(0, screenHeight - panelHeight - 12);
     }
 
@@ -213,11 +221,6 @@ public class OverlayService extends Service {
         overlayParams.y = clamped;
         try { windowManager.updateViewLayout(overlayView, overlayParams); } catch (Exception ignored) {}
         if (save) prefs.edit().putInt(KEY_OVERLAY_TOP_Y, overlayParams.y).apply();
-    }
-
-    private void movePanelBy(int deltaY) {
-        setPanelTopY(overlayParams == null ? 0 : overlayParams.y + deltaY, true);
-        updatePanelText("Положение панели изменено кнопками ↑/↓. Верхнюю строку тоже можно тянуть пальцем.");
     }
 
     @Override
