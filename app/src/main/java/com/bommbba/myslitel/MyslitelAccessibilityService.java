@@ -9,6 +9,8 @@ import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 
 import java.lang.ref.WeakReference;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 public class MyslitelAccessibilityService extends AccessibilityService {
     private static WeakReference<MyslitelAccessibilityService> activeService;
@@ -70,6 +72,20 @@ public class MyslitelAccessibilityService extends AccessibilityService {
         MyslitelAccessibilityService s = service();
         if (s == null) return false;
         return s.gestureSwipe(s.nx(x1000), s.ny(y1000), s.nx(x2_1000), s.ny(y2_1000), durationMs);
+    }
+
+    public static boolean tapSequenceNormalized(int[][] points, int delayMs) {
+        MyslitelAccessibilityService s = service();
+        if (s == null || points == null || points.length == 0) return false;
+        boolean ok = true;
+        int pause = Math.max(150, Math.min(1200, delayMs));
+        for (int i = 0; i < points.length; i++) {
+            int x = points[i] == null || points[i].length < 2 ? 500 : points[i][0];
+            int y = points[i] == null || points[i].length < 2 ? 500 : points[i][1];
+            ok = s.gestureTapBlocking(s.nx(x), s.ny(y), 1000) && ok;
+            try { Thread.sleep(pause); } catch (InterruptedException ignored) {}
+        }
+        return ok;
     }
 
     public static boolean scrollDown() {
@@ -165,6 +181,35 @@ public class MyslitelAccessibilityService extends AccessibilityService {
 
     private int dp(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
+    }
+
+    private boolean gestureTapBlocking(int x, int y, long timeoutMs) {
+        try {
+            Path path = new Path();
+            path.moveTo(x, y);
+            GestureDescription.StrokeDescription stroke = new GestureDescription.StrokeDescription(path, 0, 140);
+            GestureDescription gesture = new GestureDescription.Builder().addStroke(stroke).build();
+            CountDownLatch latch = new CountDownLatch(1);
+            final boolean[] ok = new boolean[]{false};
+            boolean dispatched = dispatchGesture(gesture, new AccessibilityService.GestureResultCallback() {
+                @Override
+                public void onCompleted(GestureDescription gestureDescription) {
+                    ok[0] = true;
+                    latch.countDown();
+                }
+
+                @Override
+                public void onCancelled(GestureDescription gestureDescription) {
+                    ok[0] = false;
+                    latch.countDown();
+                }
+            }, null);
+            if (!dispatched) return false;
+            latch.await(Math.max(300, timeoutMs), TimeUnit.MILLISECONDS);
+            return ok[0];
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private boolean gestureTap(int x, int y) {

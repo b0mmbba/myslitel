@@ -52,8 +52,8 @@ public class MainActivity extends Activity {
     private static final String MODEL = "gpt-5.5";
     private static final int REQUEST_MEDIA_PROJECTION = 2303;
     private static final long LIVE_INTERVAL_MS = 12000L;
-    private static final long AUTOPILOT_INTERVAL_MS = 2600L;
-    private static final int AUTOPILOT_MAX_STEPS = 12;
+    private static final long AUTOPILOT_INTERVAL_MS = 3400L;
+    private static final int AUTOPILOT_MAX_STEPS = 18;
 
     private static final String[] MODES = new String[]{"Комментатор", "Навигатор", "Учитель", "Антиошибка", "Тихий"};
     private static WeakReference<MainActivity> activeActivity;
@@ -219,7 +219,7 @@ public class MainActivity extends Activity {
         root.addView(title, new LinearLayout.LayoutParams(-1, -2));
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("Седьмой прототип 0.7.2.1: исправлена логика управления на рабочем столе. Добавлен action open_app, чтобы приложение могло открывать видимые ярлыки по названию, а не только тапать по координатам.");
+        subtitle.setText("Седьмой прототип 0.7.3: автопилот после каждого действия ждёт, делает новый скрин и продолжает. Добавлен tap_sequence для игр и шахмат, чтобы выполнять два тапа подряд.");
         subtitle.setTextSize(14);
         subtitle.setPadding(0, 8, 0, 18);
         root.addView(subtitle, new LinearLayout.LayoutParams(-1, -2));
@@ -652,7 +652,7 @@ public class MainActivity extends Activity {
         if (autopilotStopButton != null) autopilotStopButton.setEnabled(true);
         appendLog("Система: автопилот запущен. Задача: " + autopilotTask);
         OverlayService.updatePanelText("Автопилот запущен: " + trimForContext(autopilotTask, 90));
-        scheduleNextAutopilotStep(900);
+        scheduleNextAutopilotStep(1200);
     }
 
     private void stopAutopilot() {
@@ -757,7 +757,7 @@ public class MainActivity extends Activity {
         executor.execute(() -> {
             try {
                 // Небольшая пауза перед скрином: Android/лаунчер/игра должны успеть отрисовать экран после прошлого действия.
-                Thread.sleep(autopilot ? 900 : 450);
+                Thread.sleep(autopilot ? 1200 : 650);
                 Bitmap screenshot = ScreenCaptureService.acquireScreenshotBitmap();
                 if (screenshot == null) throw new Exception("не удалось получить кадр для управления.");
                 String dataUrl = bitmapToJpegDataUrl(screenshot);
@@ -808,11 +808,25 @@ public class MainActivity extends Activity {
                     }
                 });
             } catch (Exception e) {
+                final boolean fallbackChess = tryFallbackChessMove(finalTask);
                 runOnUiThread(() -> {
+                    if (fallbackChess) {
+                        controlErrorStreak = 0;
+                        String result = "Модель не дала JSON, поэтому сделал тестовый шахматный тап: e2 → e4. Дальше сделаю новый скрин.";
+                        appendLog("Система: " + result);
+                        OverlayService.updatePanelText(result);
+                        lastControlSummary = "fallback_chess_e2e4 ok=true";
+                        return;
+                    }
                     controlErrorStreak++;
-                    appendLog("Ошибка управления: " + e.getMessage());
-                    OverlayService.updatePanelText("Ошибка управления: " + e.getMessage());
-                    if (autopilot && controlErrorStreak >= 2) stopAutopilot();
+                    String msg = e.getMessage() == null ? "пустой ответ" : e.getMessage();
+                    appendLog("Ошибка управления: " + msg);
+                    if (autopilot) {
+                        OverlayService.updatePanelText("Не получил команду. Повторяю после нового скрина…");
+                        if (controlErrorStreak >= 5) stopAutopilot();
+                    } else {
+                        OverlayService.updatePanelText("Не получил команду. Нажми Автошаг ещё раз.");
+                    }
                 });
             } finally {
                 runOnUiThread(() -> {
@@ -880,17 +894,17 @@ public class MainActivity extends Activity {
                 "Ты управляешь Android-телефоном пользователя через приложение Мыслитель. " +
                 "У тебя есть текущий скриншот. Верни строго один JSON без markdown и без пояснений вокруг. " +
                 "Координаты x/y/x2/y2 указывай в нормализованной системе 0..1000, где 0,0 — левый верх экрана. " +
-                "Доступные action: open_app, tap, swipe, scroll_down, scroll_up, type, back, home, none. " +
+                "Доступные action: open_app, tap, tap_sequence, swipe, scroll_down, scroll_up, type, back, home, none. " +
                 "Если задача — открыть приложение, и ярлык/название приложения видно на экране, предпочитай action open_app с полем app, например {\"action\":\"open_app\",\"app\":\"Шахматы\",\"risk\":\"safe\",\"done\":false}. " +
                 "Если нужное приложение не видно на текущей странице лаунчера, используй scroll_down или scroll_up. " +
-                "tap используй только если ты уверен в координатах нужной кнопки/иконки. " +
+                "tap используй только если ты уверен в координатах нужной кнопки/иконки. Для игр и шахмат чаще используй tap_sequence: points=[{\"x\":563,\"y\":716},{\"x\":563,\"y\":604}], чтобы сначала выбрать фигуру, потом клетку. " +
                 "type используй только если на экране уже активно текстовое поле. " +
                 "Для scroll_down будет свайп вверх, чтобы список пошёл вниз; для scroll_up будет свайп вниз. " +
                 "Если видишь банк, оплату, пароль, 2FA, личную переписку, удаление данных, покупку или другое опасное действие — верни action none и risk blocked. " +
                 "Если не уверен — action none. " +
                 "После каждого действия приложение само подождёт и пришлёт новый скриншот, поэтому выбирай только один следующий шаг. " +
-                "Если задача явно завершена на текущем экране — поставь done true и action none. Иначе done false. " +
-                "Формат: {\"say\":\"коротко по-русски что делаю\",\"action\":\"open_app|tap|swipe|scroll_down|scroll_up|type|back|home|none\",\"app\":\"\",\"x\":500,\"y\":500,\"x2\":500,\"y2\":300,\"text\":\"\",\"risk\":\"safe|blocked\",\"done\":false}";
+                "Если на экране шахматы и задача — играть/выиграть/сделать ход, выбери безопасный легальный ход и верни tap_sequence из двух тапов: первая точка — фигура, вторая — клетка назначения. Если фигура уже выбрана, можно вернуть один tap по клетке назначения. После каждого действия приложение само подождёт и пришлёт новый скрин, поэтому не пытайся делать всю задачу сразу. Если задача явно завершена на текущем экране — поставь done true и action none. Иначе done false. " +
+                "Формат: {\"say\":\"коротко по-русски что делаю\",\"action\":\"open_app|tap|tap_sequence|swipe|scroll_down|scroll_up|type|back|home|none\",\"app\":\"\",\"x\":500,\"y\":500,\"x2\":500,\"y2\":300,\"points\":[{\"x\":500,\"y\":700},{\"x\":500,\"y\":500}],\"text\":\"\",\"risk\":\"safe|blocked\",\"done\":false}";
 
         String userText = "Режим: " + selectedMode + "\n" +
                 "Инструкция режима: " + modeInstruction() + "\n" +
@@ -899,7 +913,7 @@ public class MainActivity extends Activity {
                 "Предыдущее действие управления: " + (lastControlSummary.isEmpty() ? "пока нет" : lastControlSummary) + "\n" +
                 "Попытка запроса JSON: " + attempt + " из 2. Если это повторная попытка, верни именно JSON, даже если действие none.\n" +
                 "Задача пользователя: " + task + "\n" +
-                "Это " + (autopilot ? "шаг автопилота" : "один автошаг") + ". Выбери только одно безопасное действие.";
+                "Это " + (autopilot ? "новый шаг автопилота после паузы и нового скрина" : "один автошаг") + ". Смотри только на текущий скрин и выбери одно безопасное действие. Для шахмат/игр управляй реальными тапами по экрану.";
 
         JSONArray input = new JSONArray();
         input.put(new JSONObject()
@@ -916,7 +930,7 @@ public class MainActivity extends Activity {
         JSONObject payload = new JSONObject()
                 .put("model", MODEL)
                 .put("input", input)
-                .put("max_output_tokens", 260);
+                .put("max_output_tokens", 520);
         return postToResponsesApi(apiKey, payload);
     }
 
@@ -932,11 +946,49 @@ public class MainActivity extends Activity {
         return new JSONObject(t.substring(start, end + 1));
     }
 
+    private boolean executeTapSequence(JSONObject command) {
+        try {
+            JSONArray points = command.optJSONArray("points");
+            if (points == null || points.length() == 0) {
+                int x = command.optInt("x", 500);
+                int y = command.optInt("y", 500);
+                return MyslitelAccessibilityService.tapNormalized(x, y);
+            }
+            int[][] xy = new int[Math.min(points.length(), 4)][2];
+            for (int i = 0; i < xy.length; i++) {
+                JSONObject p = points.optJSONObject(i);
+                if (p == null) return false;
+                xy[i][0] = p.optInt("x", 500);
+                xy[i][1] = p.optInt("y", 500);
+            }
+            return MyslitelAccessibilityService.tapSequenceNormalized(xy, 420);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean tryFallbackChessMove(String task) {
+        try {
+            if (task == null) return false;
+            String lower = task.toLowerCase(java.util.Locale.ROOT);
+            boolean chessTask = lower.contains("шахмат") || lower.contains("сделай ход") || lower.contains("играй");
+            boolean justOpen = lower.contains("открой") || lower.contains("найди");
+            if (!chessTask || justOpen) return false;
+            // Аварийный первый ход для теста управления в шахматах: e2 -> e4.
+            // Нормализованные координаты подходят для текущего портретного экрана, где доска занимает почти всю ширину.
+            int[][] e2e4 = new int[][]{{563, 716}, {563, 604}};
+            return MyslitelAccessibilityService.tapSequenceNormalized(e2e4, 420);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     private boolean executeAccessibilityCommand(JSONObject command) {
         String action = command.optString("action", "none").trim().toLowerCase(java.util.Locale.US);
         if ("none".equals(action)) return true;
         if ("open_app".equals(action)) return MyslitelAccessibilityService.openAppByLabel(command.optString("app", ""));
         if ("tap".equals(action)) return MyslitelAccessibilityService.tapNormalized(command.optInt("x", 500), command.optInt("y", 500));
+        if ("tap_sequence".equals(action)) return executeTapSequence(command);
         if ("swipe".equals(action)) return MyslitelAccessibilityService.swipeNormalized(command.optInt("x", 500), command.optInt("y", 750), command.optInt("x2", 500), command.optInt("y2", 250), 450);
         if ("scroll_down".equals(action)) return MyslitelAccessibilityService.scrollDown();
         if ("scroll_up".equals(action)) return MyslitelAccessibilityService.scrollUp();
