@@ -59,14 +59,6 @@ public class MainActivity extends Activity {
     private Button analyzeButton;
 
     private MediaProjectionManager projectionManager;
-    private MediaProjection mediaProjection;
-    private ImageReader imageReader;
-    private VirtualDisplay virtualDisplay;
-    private int captureWidth;
-    private int captureHeight;
-    private int captureDensity;
-    private boolean captureReady = false;
-
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
@@ -77,6 +69,13 @@ public class MainActivity extends Activity {
             return;
         }
         activity.runOnUiThread(activity::analyzeCurrentScreen);
+    }
+
+    public static void notifyScreenCaptureReady(boolean ready, String message) {
+        MainActivity activity = activeActivity == null ? null : activeActivity.get();
+        if (activity != null) {
+            activity.runOnUiThread(() -> activity.appendLog(message));
+        }
     }
 
     @Override
@@ -93,14 +92,14 @@ public class MainActivity extends Activity {
         root.setBackgroundColor(0xFFF7F7F7);
 
         TextView title = new TextView(this);
-        title.setText("Мыслитель 0.3");
+        title.setText("Мыслитель 0.3.1");
         title.setTextSize(26);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setGravity(Gravity.CENTER_HORIZONTAL);
         root.addView(title, new LinearLayout.LayoutParams(-1, -2));
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("Третий прототип: чат с ИИ + нижняя панель + ручной анализ текущего экрана.");
+        subtitle.setText("Третий прототип: чат с ИИ + нижняя панель + ручной анализ экрана. Исправлена поддержка Android 14+.");
         subtitle.setTextSize(14);
         subtitle.setPadding(0, 8, 0, 20);
         root.addView(subtitle, new LinearLayout.LayoutParams(-1, -2));
@@ -184,7 +183,7 @@ public class MainActivity extends Activity {
         root.addView(askButton, new LinearLayout.LayoutParams(-1, -2));
 
         TextView warning = new TextView(this);
-        warning.setText("Важно: в 0.3 нет автопилота и управления телефоном. Анализ экрана запускается вручную: нажал кнопку — отправился один сжатый кадр.");
+        warning.setText("Важно: в 0.3.1 нет автопилота и управления телефоном. Анализ экрана запускается вручную: нажал кнопку — отправился один сжатый кадр.");
         warning.setTextSize(12);
         warning.setPadding(0, 12, 0, 0);
         root.addView(warning, new LinearLayout.LayoutParams(-1, -2));
@@ -195,7 +194,6 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        releaseScreenCapture();
         if (activeActivity != null && activeActivity.get() == this) {
             activeActivity = null;
         }
@@ -221,7 +219,7 @@ public class MainActivity extends Activity {
             return;
         }
         startService(new Intent(this, OverlayService.class));
-        appendLog("Система: нижняя панель включена. В 0.3 на панели есть кнопка “Анализ”.");
+        appendLog("Система: нижняя панель включена. В 0.3.1 на панели есть кнопка “Анализ”.");
     }
 
     private void requestScreenCapturePermission() {
@@ -244,52 +242,17 @@ public class MainActivity extends Activity {
             return;
         }
 
-        releaseScreenCapture();
-        mediaProjection = projectionManager.getMediaProjection(resultCode, data);
-        if (mediaProjection == null) {
-            appendLog("Система: не получилось запустить просмотр экрана.");
-            return;
+        Intent serviceIntent = new Intent(this, ScreenCaptureService.class);
+        serviceIntent.setAction(ScreenCaptureService.ACTION_START);
+        serviceIntent.putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, resultCode);
+        serviceIntent.putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, data);
+        if (android.os.Build.VERSION.SDK_INT >= 26) {
+            startForegroundService(serviceIntent);
+        } else {
+            startService(serviceIntent);
         }
-        mediaProjection.registerCallback(new MediaProjection.Callback() {
-            @Override
-            public void onStop() {
-                mainHandler.post(() -> {
-                    releaseScreenCaptureOnlyViews();
-                    captureReady = false;
-                    appendLog("Система: Android остановил просмотр экрана.");
-                    OverlayService.updatePanelText("Просмотр экрана остановлен. Для анализа снова выдай разрешение.");
-                });
-            }
-        }, mainHandler);
-
-        try {
-            startCapturePipeline();
-            captureReady = true;
-            appendLog("Система: просмотр экрана разрешён. Сверни приложение, открой нужный экран и нажми “Анализ” на нижней панели.");
-            OverlayService.updatePanelText("Просмотр разрешён. Открой нужный экран и нажми “Анализ”.");
-        } catch (Exception e) {
-            appendLog("Система: не удалось подготовить захват экрана: " + e.getMessage());
-            OverlayService.updatePanelText("Не удалось подготовить просмотр экрана: " + e.getMessage());
-        }
-    }
-
-    private void startCapturePipeline() {
-        DisplayMetrics metrics = getResources().getDisplayMetrics();
-        captureWidth = Math.max(1, metrics.widthPixels);
-        captureHeight = Math.max(1, metrics.heightPixels);
-        captureDensity = metrics.densityDpi;
-
-        imageReader = ImageReader.newInstance(captureWidth, captureHeight, PixelFormat.RGBA_8888, 2);
-        virtualDisplay = mediaProjection.createVirtualDisplay(
-                "myslitel-screen",
-                captureWidth,
-                captureHeight,
-                captureDensity,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                imageReader.getSurface(),
-                null,
-                mainHandler
-        );
+        appendLog("Система: разрешение получено. Запускаю безопасный сервис просмотра экрана…");
+        OverlayService.updatePanelText("Запускаю просмотр экрана…");
     }
 
     private void analyzeCurrentScreen() {
@@ -299,8 +262,8 @@ public class MainActivity extends Activity {
             OverlayService.updatePanelText("Сначала сохрани API key в приложении.");
             return;
         }
-        if (!captureReady || imageReader == null) {
-            appendLog("Система: сначала нажми “Разрешить просмотр экрана”.");
+        if (!ScreenCaptureService.isReady()) {
+            appendLog("Система: сначала нажми “Разрешить просмотр экрана” и выбери весь экран или нужное приложение.");
             OverlayService.updatePanelText("Сначала открой Мыслитель и нажми “Разрешить просмотр экрана”.");
             return;
         }
@@ -319,7 +282,7 @@ public class MainActivity extends Activity {
         executor.execute(() -> {
             try {
                 Thread.sleep(500);
-                Bitmap screenshot = acquireScreenshotBitmap();
+                Bitmap screenshot = ScreenCaptureService.acquireScreenshotBitmap();
                 if (screenshot == null) {
                     throw new Exception("не удалось получить кадр. Попробуй ещё раз через секунду.");
                 }
@@ -343,45 +306,6 @@ public class MainActivity extends Activity {
                 });
             }
         });
-    }
-
-    private Bitmap acquireScreenshotBitmap() {
-        Image image = null;
-        try {
-            image = imageReader.acquireLatestImage();
-            if (image == null) {
-                return null;
-            }
-
-            Image.Plane[] planes = image.getPlanes();
-            ByteBuffer buffer = planes[0].getBuffer();
-            int pixelStride = planes[0].getPixelStride();
-            int rowStride = planes[0].getRowStride();
-            int rowPadding = rowStride - pixelStride * captureWidth;
-
-            Bitmap paddedBitmap = Bitmap.createBitmap(
-                    captureWidth + rowPadding / pixelStride,
-                    captureHeight,
-                    Bitmap.Config.ARGB_8888
-            );
-            paddedBitmap.copyPixelsFromBuffer(buffer);
-            Bitmap cropped = Bitmap.createBitmap(paddedBitmap, 0, 0, captureWidth, captureHeight);
-            paddedBitmap.recycle();
-
-            int maxWidth = 720;
-            if (cropped.getWidth() > maxWidth) {
-                float ratio = maxWidth / (float) cropped.getWidth();
-                int newHeight = Math.max(1, Math.round(cropped.getHeight() * ratio));
-                Bitmap scaled = Bitmap.createScaledBitmap(cropped, maxWidth, newHeight, true);
-                cropped.recycle();
-                return scaled;
-            }
-            return cropped;
-        } catch (Exception e) {
-            return null;
-        } finally {
-            if (image != null) image.close();
-        }
     }
 
     private String bitmapToJpegDataUrl(Bitmap bitmap) {
@@ -537,23 +461,4 @@ public class MainActivity extends Activity {
         chatLog.append("\n" + text + "\n");
     }
 
-    private void releaseScreenCapture() {
-        releaseScreenCaptureOnlyViews();
-        if (mediaProjection != null) {
-            try { mediaProjection.stop(); } catch (Exception ignored) {}
-            mediaProjection = null;
-        }
-        captureReady = false;
-    }
-
-    private void releaseScreenCaptureOnlyViews() {
-        if (virtualDisplay != null) {
-            try { virtualDisplay.release(); } catch (Exception ignored) {}
-            virtualDisplay = null;
-        }
-        if (imageReader != null) {
-            try { imageReader.close(); } catch (Exception ignored) {}
-            imageReader = null;
-        }
-    }
 }
