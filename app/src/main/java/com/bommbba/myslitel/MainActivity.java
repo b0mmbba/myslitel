@@ -6,6 +6,9 @@ import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.media.projection.MediaProjectionManager;
 import android.net.Uri;
@@ -53,7 +56,9 @@ public class MainActivity extends Activity {
     private static final int REQUEST_MEDIA_PROJECTION = 2303;
     private static final long LIVE_INTERVAL_MS = 12000L;
     private static final long AUTOPILOT_INTERVAL_MS = 3400L;
-    private static final int AUTOPILOT_MAX_STEPS = 18;
+    private static final int AUTOPILOT_MAX_STEPS = 24;
+    private static final int GRID_COLS = 10;
+    private static final int GRID_ROWS = 20;
 
     private static final String[] MODES = new String[]{"Комментатор", "Навигатор", "Учитель", "Антиошибка", "Тихий"};
     private static WeakReference<MainActivity> activeActivity;
@@ -212,14 +217,14 @@ public class MainActivity extends Activity {
         pageScroll.addView(root, new ScrollView.LayoutParams(-1, -2));
 
         TextView title = new TextView(this);
-        title.setText("Мыслитель 0.7.2.1");
+        title.setText("Мыслитель 0.7.4");
         title.setTextSize(26);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setGravity(Gravity.CENTER_HORIZONTAL);
         root.addView(title, new LinearLayout.LayoutParams(-1, -2));
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("Седьмой прототип 0.7.3: автопилот после каждого действия ждёт, делает новый скрин и продолжает. Добавлен tap_sequence для игр и шахмат, чтобы выполнять два тапа подряд.");
+        subtitle.setText("Восьмой прототип 0.8: добавлена координатная сетка для точных тапов по экрану. Модель видит скрин с ячейками A1–J20 и может нажимать по ним.");
         subtitle.setTextSize(14);
         subtitle.setPadding(0, 8, 0, 18);
         root.addView(subtitle, new LinearLayout.LayoutParams(-1, -2));
@@ -760,7 +765,7 @@ public class MainActivity extends Activity {
                 Thread.sleep(autopilot ? 1200 : 650);
                 Bitmap screenshot = ScreenCaptureService.acquireScreenshotBitmap();
                 if (screenshot == null) throw new Exception("не удалось получить кадр для управления.");
-                String dataUrl = bitmapToJpegDataUrl(screenshot);
+                String dataUrl = bitmapToGridJpegDataUrl(screenshot);
                 screenshot.recycle();
 
                 String jsonText = null;
@@ -893,18 +898,22 @@ public class MainActivity extends Activity {
         String controlPrompt = "" +
                 "Ты управляешь Android-телефоном пользователя через приложение Мыслитель. " +
                 "У тебя есть текущий скриншот. Верни строго один JSON без markdown и без пояснений вокруг. " +
-                "Координаты x/y/x2/y2 указывай в нормализованной системе 0..1000, где 0,0 — левый верх экрана. " +
-                "Доступные action: open_app, tap, tap_sequence, swipe, scroll_down, scroll_up, type, back, home, none. " +
+                "На скриншоте поверх экрана нарисована координатная сетка: 10 колонок A–J и 20 строк 1–20. Каждая ячейка подписана, например A1, F12, J20. " +
+                "Для обычных тапов по экрану предпочитай action grid_tap с полем cell, например {\"action\":\"grid_tap\",\"cell\":\"F14\",\"risk\":\"safe\",\"done\":false}. Это надёжнее, чем x/y. " +
+                "Если нужно выбрать объект и затем место назначения, используй grid_tap_sequence с массивом cells, например {\"action\":\"grid_tap_sequence\",\"cells\":[\"F15\",\"F12\"],\"risk\":\"safe\",\"done\":false}. " +
+                "Координаты x/y/x2/y2 оставлены как запасной вариант в нормализованной системе 0..1000, где 0,0 — левый верх экрана. " +
+                "Доступные action: open_app, tap_text, grid_tap, grid_tap_sequence, chess_move, tap, tap_sequence, swipe, scroll_down, scroll_up, type, back, home, none. " +
                 "Если задача — открыть приложение, и ярлык/название приложения видно на экране, предпочитай action open_app с полем app, например {\"action\":\"open_app\",\"app\":\"Шахматы\",\"risk\":\"safe\",\"done\":false}. " +
                 "Если нужное приложение не видно на текущей странице лаунчера, используй scroll_down или scroll_up. " +
-                "tap используй только если ты уверен в координатах нужной кнопки/иконки. Для игр и шахмат чаще используй tap_sequence: points=[{\"x\":563,\"y\":716},{\"x\":563,\"y\":604}], чтобы сначала выбрать фигуру, потом клетку. " +
-                "type используй только если на экране уже активно текстовое поле. " +
+                "Для обычных Android-кнопок с текстом (OK, ОК, Готово, Сохранить, Отмена, Далее, Назад) НЕ угадывай координаты: используй tap_text с полем text. Например {\"action\":\"tap_text\",\"text\":\"OK\",\"risk\":\"safe\",\"done\":true}. " +
+                "tap используй только если ты уверен в координатах нужной кнопки/иконки. Для игр, шахмат и интерфейсов без доступного текста предпочитай grid_tap или grid_tap_sequence по видимой сетке. " +
+                "type используй только если на экране уже активно текстовое поле. После ввода времени/текста на следующем шаге нажимай подтверждение через tap_text, а не координатами. " +
                 "Для scroll_down будет свайп вверх, чтобы список пошёл вниз; для scroll_up будет свайп вниз. " +
                 "Если видишь банк, оплату, пароль, 2FA, личную переписку, удаление данных, покупку или другое опасное действие — верни action none и risk blocked. " +
                 "Если не уверен — action none. " +
                 "После каждого действия приложение само подождёт и пришлёт новый скриншот, поэтому выбирай только один следующий шаг. " +
-                "Если на экране шахматы и задача — играть/выиграть/сделать ход, выбери безопасный легальный ход и верни tap_sequence из двух тапов: первая точка — фигура, вторая — клетка назначения. Если фигура уже выбрана, можно вернуть один tap по клетке назначения. После каждого действия приложение само подождёт и пришлёт новый скрин, поэтому не пытайся делать всю задачу сразу. Если задача явно завершена на текущем экране — поставь done true и action none. Иначе done false. " +
-                "Формат: {\"say\":\"коротко по-русски что делаю\",\"action\":\"open_app|tap|tap_sequence|swipe|scroll_down|scroll_up|type|back|home|none\",\"app\":\"\",\"x\":500,\"y\":500,\"x2\":500,\"y2\":300,\"points\":[{\"x\":500,\"y\":700},{\"x\":500,\"y\":500}],\"text\":\"\",\"risk\":\"safe|blocked\",\"done\":false}";
+                "Если на экране шахматы и задача — играть/выиграть/сделать ход, верни action chess_move с полями from и to в шахматной нотации, например {\"action\":\"chess_move\",\"from\":\"e2\",\"to\":\"e4\",\"risk\":\"safe\",\"done\":false}. Это надёжнее, чем координаты. Если фигура уже выбрана, можно вернуть tap по клетке назначения, но лучше chess_move с исходной и конечной клеткой. После каждого действия приложение само подождёт и пришлёт новый скрин, поэтому не пытайся делать всю задачу сразу. Если задача явно завершена на текущем экране — поставь done true и action none. Иначе done false. " +
+                "Формат: {\"say\":\"коротко по-русски что делаю\",\"action\":\"open_app|tap_text|chess_move|tap|tap_sequence|swipe|scroll_down|scroll_up|type|back|home|none\",\"app\":\"\",\"from\":\"e2\",\"to\":\"e4\",\"x\":500,\"y\":500,\"x2\":500,\"y2\":300,\"points\":[{\"x\":500,\"y\":700},{\"x\":500,\"y\":500}],\"text\":\"\",\"risk\":\"safe|blocked\",\"done\":false}";
 
         String userText = "Режим: " + selectedMode + "\n" +
                 "Инструкция режима: " + modeInstruction() + "\n" +
@@ -913,7 +922,7 @@ public class MainActivity extends Activity {
                 "Предыдущее действие управления: " + (lastControlSummary.isEmpty() ? "пока нет" : lastControlSummary) + "\n" +
                 "Попытка запроса JSON: " + attempt + " из 2. Если это повторная попытка, верни именно JSON, даже если действие none.\n" +
                 "Задача пользователя: " + task + "\n" +
-                "Это " + (autopilot ? "новый шаг автопилота после паузы и нового скрина" : "один автошаг") + ". Смотри только на текущий скрин и выбери одно безопасное действие. Для шахмат/игр управляй реальными тапами по экрану.";
+                "Это " + (autopilot ? "новый шаг автопилота после паузы и нового скрина" : "один автошаг") + ". Смотри только на текущий скрин с сеткой A1–J20 и выбери одно безопасное действие. Для шахмат/игр управляй реальными тапами по экрану через grid_tap/grid_tap_sequence, если текстовые элементы недоступны.";
 
         JSONArray input = new JSONArray();
         input.put(new JSONObject()
@@ -961,7 +970,7 @@ public class MainActivity extends Activity {
                 xy[i][0] = p.optInt("x", 500);
                 xy[i][1] = p.optInt("y", 500);
             }
-            return MyslitelAccessibilityService.tapSequenceNormalized(xy, 420);
+            return MyslitelAccessibilityService.tapSequenceNormalized(xy, 650);
         } catch (Exception e) {
             return false;
         }
@@ -977,16 +986,62 @@ public class MainActivity extends Activity {
             // Аварийный первый ход для теста управления в шахматах: e2 -> e4.
             // Нормализованные координаты подходят для текущего портретного экрана, где доска занимает почти всю ширину.
             int[][] e2e4 = new int[][]{{563, 716}, {563, 604}};
-            return MyslitelAccessibilityService.tapSequenceNormalized(e2e4, 420);
+            return MyslitelAccessibilityService.tapSequenceNormalized(e2e4, 650);
         } catch (Exception e) {
             return false;
         }
+    }
+
+
+    private boolean executeGridTap(JSONObject command) {
+        int[] point = gridCellToNormalizedPoint(command.optString("cell", ""));
+        if (point == null) return false;
+        return MyslitelAccessibilityService.tapNormalized(point[0], point[1]);
+    }
+
+    private boolean executeGridTapSequence(JSONObject command) {
+        try {
+            JSONArray cells = command.optJSONArray("cells");
+            if (cells == null || cells.length() == 0) return executeGridTap(command);
+            int count = Math.min(cells.length(), 5);
+            int[][] points = new int[count][2];
+            for (int i = 0; i < count; i++) {
+                int[] p = gridCellToNormalizedPoint(cells.optString(i, ""));
+                if (p == null) return false;
+                points[i][0] = p[0];
+                points[i][1] = p[1];
+            }
+            return MyslitelAccessibilityService.tapSequenceNormalized(points, 800);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private int[] gridCellToNormalizedPoint(String cell) {
+        if (cell == null) return null;
+        String c = cell.trim().toUpperCase(java.util.Locale.US).replace(" ", "");
+        if (c.length() < 2) return null;
+        char colChar = c.charAt(0);
+        int col = colChar - 'A';
+        if (col < 0 || col >= GRID_COLS) return null;
+        String rowPart = c.substring(1).replaceAll("[^0-9]", "");
+        if (rowPart.isEmpty()) return null;
+        int row;
+        try { row = Integer.parseInt(rowPart) - 1; } catch (Exception e) { return null; }
+        if (row < 0 || row >= GRID_ROWS) return null;
+        int x = Math.round(((col + 0.5f) / GRID_COLS) * 1000f);
+        int y = Math.round(((row + 0.5f) / GRID_ROWS) * 1000f);
+        return new int[]{x, y};
     }
 
     private boolean executeAccessibilityCommand(JSONObject command) {
         String action = command.optString("action", "none").trim().toLowerCase(java.util.Locale.US);
         if ("none".equals(action)) return true;
         if ("open_app".equals(action)) return MyslitelAccessibilityService.openAppByLabel(command.optString("app", ""));
+        if ("tap_text".equals(action)) return MyslitelAccessibilityService.clickText(command.optString("text", ""));
+        if ("grid_tap".equals(action)) return executeGridTap(command);
+        if ("grid_tap_sequence".equals(action)) return executeGridTapSequence(command);
+        if ("chess_move".equals(action)) return MyslitelAccessibilityService.chessMove(command.optString("from", ""), command.optString("to", ""));
         if ("tap".equals(action)) return MyslitelAccessibilityService.tapNormalized(command.optInt("x", 500), command.optInt("y", 500));
         if ("tap_sequence".equals(action)) return executeTapSequence(command);
         if ("swipe".equals(action)) return MyslitelAccessibilityService.swipeNormalized(command.optInt("x", 500), command.optInt("y", 750), command.optInt("x2", 500), command.optInt("y2", 250), 450);
@@ -1015,7 +1070,7 @@ public class MainActivity extends Activity {
             return;
         }
         startService(new Intent(this, OverlayService.class));
-        appendLog("Система: нижняя панель включена. В 0.7 на панели только чат и кнопки: Спросить, Анализ, Live/Стоп, Автошаг/Авто/Стоп.");
+        appendLog("Система: нижняя панель включена. В 0.8 модель получает скрин с координатной сеткой A1–J20 и может нажимать через grid_tap.");
     }
 
     private void requestScreenCapturePermission() {
@@ -1296,6 +1351,59 @@ public class MainActivity extends Activity {
         String clean = text.replace('\n', ' ').trim();
         if (clean.length() <= maxChars) return clean;
         return clean.substring(clean.length() - maxChars);
+    }
+
+
+    private String bitmapToGridJpegDataUrl(Bitmap bitmap) {
+        try {
+            Bitmap copy = bitmap.copy(Bitmap.Config.ARGB_8888, true);
+            Canvas canvas = new Canvas(copy);
+            int w = copy.getWidth();
+            int h = copy.getHeight();
+
+            Paint linePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            linePaint.setColor(0xAA00E5FF);
+            linePaint.setStrokeWidth(Math.max(2f, w / 360f));
+
+            Paint labelBg = new Paint(Paint.ANTI_ALIAS_FLAG);
+            labelBg.setColor(0xAA000000);
+
+            Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            textPaint.setColor(Color.WHITE);
+            textPaint.setTextSize(Math.max(18f, w / 32f));
+            textPaint.setTypeface(Typeface.DEFAULT_BOLD);
+            textPaint.setTextAlign(Paint.Align.CENTER);
+
+            float cellW = w / (float) GRID_COLS;
+            float cellH = h / (float) GRID_ROWS;
+
+            for (int c = 0; c <= GRID_COLS; c++) {
+                float x = c * cellW;
+                canvas.drawLine(x, 0, x, h, linePaint);
+            }
+            for (int r = 0; r <= GRID_ROWS; r++) {
+                float y = r * cellH;
+                canvas.drawLine(0, y, w, y, linePaint);
+            }
+            for (int r = 0; r < GRID_ROWS; r++) {
+                for (int c = 0; c < GRID_COLS; c++) {
+                    String label = String.valueOf((char)('A' + c)) + (r + 1);
+                    float cx = (c + 0.5f) * cellW;
+                    float cy = (r + 0.5f) * cellH;
+                    float bw = textPaint.measureText(label) + 14;
+                    float bh = textPaint.getTextSize() + 10;
+                    canvas.drawRoundRect(cx - bw / 2f, cy - bh / 2f, cx + bw / 2f, cy + bh / 2f, 8, 8, labelBg);
+                    Paint.FontMetrics fm = textPaint.getFontMetrics();
+                    float baseline = cy - (fm.ascent + fm.descent) / 2f;
+                    canvas.drawText(label, cx, baseline, textPaint);
+                }
+            }
+            String result = bitmapToJpegDataUrl(copy);
+            copy.recycle();
+            return result;
+        } catch (Exception e) {
+            return bitmapToJpegDataUrl(bitmap);
+        }
     }
 
     private String bitmapToJpegDataUrl(Bitmap bitmap) {

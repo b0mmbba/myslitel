@@ -157,6 +157,60 @@ public class MyslitelAccessibilityService extends AccessibilityService {
         return null;
     }
 
+
+    public static boolean clickText(String textNeedle) {
+        MyslitelAccessibilityService s = service();
+        if (s == null || textNeedle == null || textNeedle.trim().isEmpty()) return false;
+        AccessibilityNodeInfo root = s.getRootInActiveWindow();
+        if (root == null) return false;
+        String needle = textNeedle.trim().toLowerCase(java.util.Locale.ROOT);
+        AccessibilityNodeInfo node = s.findNodeByText(root, needle);
+        if (node == null && (needle.equals("ok") || needle.equals("ок"))) {
+            node = s.findNodeByText(root, "готово");
+            if (node == null) node = s.findNodeByText(root, "подтвердить");
+        }
+        if (node == null) return false;
+        AccessibilityNodeInfo clickable = node;
+        while (clickable != null && !clickable.isClickable()) clickable = clickable.getParent();
+        if (clickable != null && clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true;
+        Rect r = new Rect();
+        node.getBoundsInScreen(r);
+        return !r.isEmpty() && s.gestureTapBlocking(r.centerX(), r.centerY(), 1200);
+    }
+
+    public static boolean chessMove(String from, String to) {
+        MyslitelAccessibilityService s = service();
+        if (s == null || from == null || to == null) return false;
+        int[] a = s.squareToPoint(from.trim().toLowerCase(java.util.Locale.ROOT));
+        int[] b = s.squareToPoint(to.trim().toLowerCase(java.util.Locale.ROOT));
+        if (a == null || b == null) return false;
+        return s.gestureTapBlocking(a[0], a[1], 1200) && s.sleepAndTap(b[0], b[1], 650);
+    }
+
+    private boolean sleepAndTap(int x, int y, long delayMs) {
+        try { Thread.sleep(Math.max(200, Math.min(1400, delayMs))); } catch (InterruptedException ignored) {}
+        return gestureTapBlocking(x, y, 1200);
+    }
+
+    private int[] squareToPoint(String sq) {
+        if (sq == null || sq.length() < 2) return null;
+        char f = sq.charAt(0);
+        char r = sq.charAt(1);
+        int file = f - 'a';
+        int rank = r - '1' + 1;
+        if (file < 0 || file > 7 || rank < 1 || rank > 8) return null;
+        int boardSize = screenWidth();
+        int left = 0;
+        // Для портретного экрана и приложения Checkmate: доска обычно начинается примерно на 35% высоты.
+        // Если приложение/устройство другое, эта калибровка может немного промахиваться, но для текущего MVP этого достаточно.
+        int top = Math.round(screenHeight() * 0.351f);
+        float cell = boardSize / 8f;
+        int x = Math.round(left + (file + 0.5f) * cell);
+        // Белые снизу: rank 1 — нижний ряд, rank 8 — верхний ряд.
+        int y = Math.round(top + (8 - rank + 0.5f) * cell);
+        return new int[]{x, y};
+    }
+
     public static boolean typeText(String text) {
         MyslitelAccessibilityService s = service();
         if (s == null || text == null) return false;
