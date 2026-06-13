@@ -42,6 +42,10 @@ public class MainActivity extends Activity {
     private static final String KEY_OPENAI = "openai_api_key";
     private static final String KEY_MODE = "work_mode";
     private static final String KEY_SESSION_CONTEXT = "session_context";
+    private static final String KEY_BUDGET_USD = "budget_usd";
+    private static final String KEY_ESTIMATED_SPEND_USD = "estimated_spend_usd";
+    private static final String KEY_INPUT_PRICE_PER_M = "input_price_per_m";
+    private static final String KEY_OUTPUT_PRICE_PER_M = "output_price_per_m";
     private static final String MODEL = "gpt-5.5";
     private static final int REQUEST_MEDIA_PROJECTION = 2303;
     private static final long LIVE_INTERVAL_MS = 12000L;
@@ -52,7 +56,12 @@ public class MainActivity extends Activity {
     private EditText apiKeyInput;
     private EditText contextInput;
     private EditText messageInput;
+    private EditText budgetInput;
+    private EditText inputPriceInput;
+    private EditText outputPriceInput;
     private TextView chatLog;
+    private TextView modeDescriptionText;
+    private TextView balanceView;
     private Button askButton;
     private Button analyzeButton;
     private Button liveStartButton;
@@ -69,6 +78,10 @@ public class MainActivity extends Activity {
     private String liveContext = "";
     private String selectedMode = "Комментатор";
     private String sessionContext = "";
+    private double budgetUsd = 10.0;
+    private double estimatedSpendUsd = 0.0;
+    private double inputPricePerM = 5.0;
+    private double outputPricePerM = 30.0;
 
     public static void analyzeScreenFromOverlay() {
         MainActivity activity = getActiveActivity();
@@ -143,6 +156,10 @@ public class MainActivity extends Activity {
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         selectedMode = prefs.getString(KEY_MODE, "Комментатор");
         sessionContext = prefs.getString(KEY_SESSION_CONTEXT, "");
+        budgetUsd = parseDoubleSafe(prefs.getString(KEY_BUDGET_USD, "10"), 10.0);
+        estimatedSpendUsd = Double.longBitsToDouble(prefs.getLong(KEY_ESTIMATED_SPEND_USD, Double.doubleToLongBits(0.0)));
+        inputPricePerM = parseDoubleSafe(prefs.getString(KEY_INPUT_PRICE_PER_M, "5"), 5.0);
+        outputPricePerM = parseDoubleSafe(prefs.getString(KEY_OUTPUT_PRICE_PER_M, "30"), 30.0);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -150,17 +167,23 @@ public class MainActivity extends Activity {
         root.setBackgroundColor(0xFFF7F7F7);
 
         TextView title = new TextView(this);
-        title.setText("Мыслитель 0.5");
+        title.setText("Мыслитель 0.6");
         title.setTextSize(26);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setGravity(Gravity.CENTER_HORIZONTAL);
         root.addView(title, new LinearLayout.LayoutParams(-1, -2));
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("Пятый прототип: чат + панель + ручной анализ + Live + режимы работы + поле сообщения прямо на нижней панели + общий контекст сессии.");
+        subtitle.setText("Шестой прототип: панель снизу упрощена до чата + Анализ + Live/Стоп, окно можно двигать, режимы описаны понятнее, просмотр экрана можно сбрасывать, добавлен локальный счётчик бюджета API.");
         subtitle.setTextSize(14);
         subtitle.setPadding(0, 8, 0, 18);
         root.addView(subtitle, new LinearLayout.LayoutParams(-1, -2));
+
+        TextView modelInfo = new TextView(this);
+        modelInfo.setText("Модель в этой сборке: " + MODEL + ". Режимы — это разные инструкции к одной модели, а не разные модели.");
+        modelInfo.setTextSize(13);
+        modelInfo.setPadding(0, 0, 0, 12);
+        root.addView(modelInfo, new LinearLayout.LayoutParams(-1, -2));
 
         apiKeyInput = new EditText(this);
         apiKeyInput.setHint("OpenAI API key: sk-...");
@@ -199,6 +222,12 @@ public class MainActivity extends Activity {
         });
         root.addView(modeSpinner, new LinearLayout.LayoutParams(-1, -2));
 
+        modeDescriptionText = new TextView(this);
+        modeDescriptionText.setText(modeLongDescription(selectedMode));
+        modeDescriptionText.setTextSize(12);
+        modeDescriptionText.setPadding(0, 6, 0, 10);
+        root.addView(modeDescriptionText, new LinearLayout.LayoutParams(-1, -2));
+
         contextInput = new EditText(this);
         contextInput.setHint("Контекст/цель: например, помогай мне разобраться в настройках Android");
         contextInput.setMinLines(2);
@@ -222,6 +251,59 @@ public class MainActivity extends Activity {
             OverlayService.updatePanelText("Контекст сессии очищен.");
         });
         root.addView(clearContextButton, new LinearLayout.LayoutParams(-1, -2));
+
+        TextView apiBudgetTitle = new TextView(this);
+        apiBudgetTitle.setText("API бюджет и примерный расход:");
+        apiBudgetTitle.setTextSize(15);
+        apiBudgetTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        apiBudgetTitle.setPadding(0, 18, 0, 4);
+        root.addView(apiBudgetTitle, new LinearLayout.LayoutParams(-1, -2));
+
+        balanceView = new TextView(this);
+        balanceView.setTextSize(13);
+        balanceView.setPadding(0, 0, 0, 8);
+        root.addView(balanceView, new LinearLayout.LayoutParams(-1, -2));
+
+        LinearLayout budgetRow = new LinearLayout(this);
+        budgetRow.setOrientation(LinearLayout.HORIZONTAL);
+        budgetInput = new EditText(this);
+        budgetInput.setHint("Бюджет, $ например 10");
+        budgetInput.setSingleLine(true);
+        budgetInput.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        budgetInput.setText(formatMoneyPlain(budgetUsd));
+        budgetRow.addView(budgetInput, new LinearLayout.LayoutParams(0, -2, 1f));
+        Button saveBudgetButton = new Button(this);
+        saveBudgetButton.setText("Сохранить бюджет");
+        saveBudgetButton.setOnClickListener(v -> saveBudgetSettings());
+        budgetRow.addView(saveBudgetButton, new LinearLayout.LayoutParams(0, -2, 1f));
+        root.addView(budgetRow, new LinearLayout.LayoutParams(-1, -2));
+
+        LinearLayout priceRow = new LinearLayout(this);
+        priceRow.setOrientation(LinearLayout.HORIZONTAL);
+        inputPriceInput = new EditText(this);
+        inputPriceInput.setHint("input $/1M");
+        inputPriceInput.setSingleLine(true);
+        inputPriceInput.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        inputPriceInput.setText(formatMoneyPlain(inputPricePerM));
+        priceRow.addView(inputPriceInput, new LinearLayout.LayoutParams(0, -2, 1f));
+        outputPriceInput = new EditText(this);
+        outputPriceInput.setHint("output $/1M");
+        outputPriceInput.setSingleLine(true);
+        outputPriceInput.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        outputPriceInput.setText(formatMoneyPlain(outputPricePerM));
+        priceRow.addView(outputPriceInput, new LinearLayout.LayoutParams(0, -2, 1f));
+        root.addView(priceRow, new LinearLayout.LayoutParams(-1, -2));
+
+        Button resetUsageButton = new Button(this);
+        resetUsageButton.setText("Сбросить локальный счётчик расхода");
+        resetUsageButton.setOnClickListener(v -> resetUsageEstimate());
+        root.addView(resetUsageButton, new LinearLayout.LayoutParams(-1, -2));
+
+        TextView budgetNote = new TextView(this);
+        budgetNote.setText("Это локальная оценка по токенам из ответов API, а не официальный баланс OpenAI. Реальный баланс смотри в Billing на Platform.");
+        budgetNote.setTextSize(12);
+        root.addView(budgetNote, new LinearLayout.LayoutParams(-1, -2));
+        updateBalanceView();
 
         TextView overlayTitle = new TextView(this);
         overlayTitle.setText("Панель поверх экрана:");
@@ -256,7 +338,7 @@ public class MainActivity extends Activity {
         root.addView(screenTitle, new LinearLayout.LayoutParams(-1, -2));
 
         Button screenButton = new Button(this);
-        screenButton.setText("3. Разрешить просмотр экрана");
+        screenButton.setText("3. Разрешить / заново запросить просмотр экрана");
         screenButton.setOnClickListener(v -> requestScreenCapturePermission());
         root.addView(screenButton, new LinearLayout.LayoutParams(-1, -2));
 
@@ -269,6 +351,14 @@ public class MainActivity extends Activity {
         stopScreenButton.setText("Остановить просмотр экрана");
         stopScreenButton.setOnClickListener(v -> stopScreenCapture());
         root.addView(stopScreenButton, new LinearLayout.LayoutParams(-1, -2));
+
+        Button resetScreenButton = new Button(this);
+        resetScreenButton.setText("Сбросить просмотр и запросить разрешение заново");
+        resetScreenButton.setOnClickListener(v -> {
+            stopScreenCapture();
+            mainHandler.postDelayed(this::requestScreenCapturePermission, 450);
+        });
+        root.addView(resetScreenButton, new LinearLayout.LayoutParams(-1, -2));
 
         liveStartButton = new Button(this);
         liveStartButton.setText("5. Запустить live-комментарии (каждые 12 сек)");
@@ -303,13 +393,13 @@ public class MainActivity extends Activity {
         root.addView(askButton, new LinearLayout.LayoutParams(-1, -2));
 
         TextView warning = new TextView(this);
-        warning.setText("Важно: 0.5 всё ещё не управляет телефоном. Панель пока является overlay поверх приложений; настоящий режим “под экраном”, который уменьшает область приложений, лучше делать отдельным модулем-клавиатурой в следующей версии.");
+        warning.setText("Важно: 0.6 не управляет телефоном. Панель остаётся overlay поверх приложений, но теперь её можно передвигать за ручку. Вариант “под экраном” без клавиатуры обычный Android не даёт сделать для чужих приложений.");
         warning.setTextSize(12);
         warning.setPadding(0, 12, 0, 0);
         root.addView(warning, new LinearLayout.LayoutParams(-1, -2));
 
         setContentView(root);
-        OverlayService.updatePanelText("Режим: " + selectedMode + ". Контекст: " + compactContextForUi());
+        OverlayService.updatePanelText("Режим: " + selectedMode + ". Модель: " + MODEL + ". Контекст: " + compactContextForUi());
     }
 
     @Override
@@ -326,6 +416,7 @@ public class MainActivity extends Activity {
     private void setMode(String mode) {
         selectedMode = mode;
         if (prefs != null) prefs.edit().putString(KEY_MODE, mode).apply();
+        if (modeDescriptionText != null) modeDescriptionText.setText(modeLongDescription(mode));
         OverlayService.updatePanelText("Режим: " + selectedMode + ". " + modeShortHint(mode));
     }
 
@@ -337,12 +428,20 @@ public class MainActivity extends Activity {
         return "Буду кратко комментировать экран.";
     }
 
+    private String modeLongDescription(String mode) {
+        if ("Навигатор".equals(mode)) return "Навигатор: ищет следующий конкретный шаг. Формат: что нажать/куда перейти/что проверить. Минимум описаний.";
+        if ("Учитель".equals(mode)) return "Учитель: объясняет смысл происходящего на экране простыми словами. Подходит для обучения и разбора интерфейсов.";
+        if ("Антиошибка".equals(mode)) return "Антиошибка: ищет ошибки, предупреждения, опасные действия, неверные настройки и предлагает безопасное исправление.";
+        if ("Тихий".equals(mode)) return "Тихий: молчит или пишет “Без изменений”, если ничего важного. Подходит для долгого live, чтобы не спамить.";
+        return "Комментатор: коротко описывает, что происходит на экране, и даёт один полезный совет. Это базовый режим.";
+    }
+
     private String modeInstruction() {
-        if ("Навигатор".equals(selectedMode)) return "Ты в режиме Навигатор: помогай пользователю понять следующий конкретный шаг. Не делай длинных объяснений.";
-        if ("Учитель".equals(selectedMode)) return "Ты в режиме Учитель: объясняй, что происходит, простым языком и обучай пользователя.";
-        if ("Антиошибка".equals(selectedMode)) return "Ты в режиме Антиошибка: ищи ошибки, предупреждения, опасные места, неправильные действия и предлагай безопасное исправление.";
-        if ("Тихий".equals(selectedMode)) return "Ты в режиме Тихий: отвечай только когда есть что-то важное. Если экран почти не изменился, скажи очень коротко: “Без изменений”.";
-        return "Ты в режиме Комментатор: кратко комментируй происходящее на экране и давай один полезный совет.";
+        if ("Навигатор".equals(selectedMode)) return "Ты в режиме Навигатор: не просто описывай экран, а дай следующий конкретный шаг. Формат: 1) что нажать/куда перейти; 2) зачем. Максимум 2 короткие строки.";
+        if ("Учитель".equals(selectedMode)) return "Ты в режиме Учитель: объясняй происходящее простым языком, как наставник. Не командуй, а помогай понять смысл интерфейса и действий.";
+        if ("Антиошибка".equals(selectedMode)) return "Ты в режиме Антиошибка: приоритет — заметить ошибки, предупреждения, риски, неправильные действия, приватные данные и странные места. Дай короткое безопасное исправление.";
+        if ("Тихий".equals(selectedMode)) return "Ты в режиме Тихий: отвечай только когда есть новое или важное. Если экран похож на предыдущий и нет риска/ошибки, ответь ровно: “Без изменений”.";
+        return "Ты в режиме Комментатор: кратко скажи, что происходит на экране, и добавь один полезный совет. Не растягивай ответ.";
     }
 
     private void saveContextFromField() {
@@ -355,6 +454,74 @@ public class MainActivity extends Activity {
     private String compactContextForUi() {
         if (sessionContext == null || sessionContext.trim().isEmpty()) return "пока пустой";
         return trimForContext(sessionContext, 120);
+    }
+
+    private double parseDoubleSafe(String text, double fallback) {
+        try {
+            if (text == null) return fallback;
+            String normalized = text.trim().replace(',', '.');
+            if (normalized.isEmpty()) return fallback;
+            return Double.parseDouble(normalized);
+        } catch (Exception e) {
+            return fallback;
+        }
+    }
+
+    private String formatMoneyPlain(double value) {
+        if (Math.abs(value - Math.round(value)) < 0.0001) return String.valueOf((long) Math.round(value));
+        return String.format(java.util.Locale.US, "%.4f", value).replaceAll("0+$", "").replaceAll("\\.$", "");
+    }
+
+    private String formatUsd(double value) {
+        return String.format(java.util.Locale.US, "$%.4f", Math.max(0.0, value));
+    }
+
+    private void updateBalanceView() {
+        if (balanceView == null) return;
+        double remaining = Math.max(0.0, budgetUsd - estimatedSpendUsd);
+        balanceView.setText("Модель: " + MODEL + " | Бюджет: " + formatUsd(budgetUsd) + " | Примерно потрачено: " + formatUsd(estimatedSpendUsd) + " | Осталось по локальной оценке: " + formatUsd(remaining));
+    }
+
+    private void readBudgetSettingsFromFields() {
+        budgetUsd = parseDoubleSafe(budgetInput == null ? null : budgetInput.getText().toString(), budgetUsd);
+        inputPricePerM = parseDoubleSafe(inputPriceInput == null ? null : inputPriceInput.getText().toString(), inputPricePerM);
+        outputPricePerM = parseDoubleSafe(outputPriceInput == null ? null : outputPriceInput.getText().toString(), outputPricePerM);
+        prefs.edit()
+                .putString(KEY_BUDGET_USD, formatMoneyPlain(budgetUsd))
+                .putString(KEY_INPUT_PRICE_PER_M, formatMoneyPlain(inputPricePerM))
+                .putString(KEY_OUTPUT_PRICE_PER_M, formatMoneyPlain(outputPricePerM))
+                .apply();
+        updateBalanceView();
+    }
+
+    private void saveBudgetSettings() {
+        readBudgetSettingsFromFields();
+        appendLog("Система: настройки локального бюджета сохранены. Это оценка, не официальный баланс OpenAI.");
+    }
+
+    private void resetUsageEstimate() {
+        estimatedSpendUsd = 0.0;
+        prefs.edit().putLong(KEY_ESTIMATED_SPEND_USD, Double.doubleToLongBits(estimatedSpendUsd)).apply();
+        updateBalanceView();
+        appendLog("Система: локальный счётчик расхода сброшен.");
+        OverlayService.updatePanelText("Локальный счётчик расхода API сброшен.");
+    }
+
+    private void recordUsageFromResponse(JSONObject json) {
+        try {
+            JSONObject usage = json.optJSONObject("usage");
+            if (usage == null) return;
+            int inputTokens = usage.optInt("input_tokens", 0);
+            int outputTokens = usage.optInt("output_tokens", 0);
+            if (inputTokens <= 0 && outputTokens <= 0) return;
+            double cost = (inputTokens / 1000000.0) * inputPricePerM + (outputTokens / 1000000.0) * outputPricePerM;
+            estimatedSpendUsd += cost;
+            prefs.edit().putLong(KEY_ESTIMATED_SPEND_USD, Double.doubleToLongBits(estimatedSpendUsd)).apply();
+            runOnUiThread(() -> {
+                updateBalanceView();
+                appendLog("Система: примерный расход этого запроса: " + formatUsd(cost) + " (input " + inputTokens + ", output " + outputTokens + ").");
+            });
+        } catch (Exception ignored) {}
     }
 
     private void requestOverlayPermission() {
@@ -374,7 +541,7 @@ public class MainActivity extends Activity {
             return;
         }
         startService(new Intent(this, OverlayService.class));
-        appendLog("Система: нижняя панель включена. В 0.5 на панели есть поле сообщения, режимы, “Анализ”, “Live”, “Стоп live” и “Стоп просмотр”.");
+        appendLog("Система: нижняя панель включена. В 0.6 на панели только чат, “Спросить”, “Анализ”, “Live” и “Стоп live”. Режимы и остальные настройки — в приложении.");
     }
 
     private void requestScreenCapturePermission() {
@@ -382,8 +549,13 @@ public class MainActivity extends Activity {
             appendLog("Система: MediaProjection недоступен на этом устройстве.");
             return;
         }
-        appendLog("Система: Android спросит разрешение на запись/трансляцию экрана. Для теста выбирай безопасный экран, не банки и не пароли.");
-        startActivityForResult(projectionManager.createScreenCaptureIntent(), REQUEST_MEDIA_PROJECTION);
+        if (liveModeEnabled) stopLiveMode();
+        Intent stopIntent = new Intent(this, ScreenCaptureService.class);
+        stopIntent.setAction(ScreenCaptureService.ACTION_STOP);
+        try { startService(stopIntent); } catch (Exception ignored) {}
+        appendLog("Система: сейчас запрошу просмотр экрана заново. Если до этого нажал “Запретить”, это должно дать новый чистый запрос.");
+        OverlayService.updatePanelText("Запрашиваю просмотр экрана заново…");
+        mainHandler.postDelayed(() -> startActivityForResult(projectionManager.createScreenCaptureIntent(), REQUEST_MEDIA_PROJECTION), 250);
     }
 
     @Override
@@ -391,8 +563,11 @@ public class MainActivity extends Activity {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQUEST_MEDIA_PROJECTION) {
             if (resultCode != RESULT_OK || data == null) {
-                appendLog("Система: просмотр экрана не разрешён.");
-                OverlayService.updatePanelText("Просмотр экрана не разрешён.");
+                appendLog("Система: просмотр экрана не разрешён. Чтобы попробовать снова, нажми “3. Разрешить / заново запросить просмотр экрана”.");
+                OverlayService.updatePanelText("Просмотр не разрешён. Открой приложение и запроси заново.");
+                Intent stopIntent = new Intent(this, ScreenCaptureService.class);
+                stopIntent.setAction(ScreenCaptureService.ACTION_STOP);
+                try { startService(stopIntent); } catch (Exception ignored) {}
                 return;
             }
             Intent serviceIntent = new Intent(this, ScreenCaptureService.class);
@@ -497,6 +672,7 @@ public class MainActivity extends Activity {
         }
 
         saveContextFromField();
+        readBudgetSettingsFromFields();
 
         String userTask = taskOverride == null ? messageInput.getText().toString().trim() : taskOverride.trim();
         if (userTask.isEmpty()) {
@@ -521,8 +697,8 @@ public class MainActivity extends Activity {
         }
 
         analysisRunning = true;
-        analyzeButton.setEnabled(false);
-        askButton.setEnabled(false);
+        if (analyzeButton != null) analyzeButton.setEnabled(false);
+        if (askButton != null) askButton.setEnabled(false);
 
         executor.execute(() -> {
             try {
@@ -547,8 +723,8 @@ public class MainActivity extends Activity {
             } finally {
                 runOnUiThread(() -> {
                     analysisRunning = false;
-                    analyzeButton.setEnabled(true);
-                    askButton.setEnabled(true);
+                    if (analyzeButton != null) analyzeButton.setEnabled(true);
+                    if (askButton != null) askButton.setEnabled(true);
                     if (liveMode && liveModeEnabled) scheduleNextLiveTick(LIVE_INTERVAL_MS);
                 });
             }
@@ -590,6 +766,7 @@ public class MainActivity extends Activity {
 
         prompt = prompt.trim();
         saveContextFromField();
+        readBudgetSettingsFromFields();
         if (!fromOverlay) messageInput.setText("");
         appendLog((fromOverlay ? "Ты с панели: " : "Ты: ") + prompt);
         askButton.setEnabled(false);
@@ -721,6 +898,7 @@ public class MainActivity extends Activity {
         if (code < 200 || code >= 300) throw new Exception("HTTP " + code + ": " + response);
 
         JSONObject json = new JSONObject(response);
+        recordUsageFromResponse(json);
         String outputText = json.optString("output_text", "").trim();
         if (!outputText.isEmpty()) return outputText;
         return extractTextFallback(json);

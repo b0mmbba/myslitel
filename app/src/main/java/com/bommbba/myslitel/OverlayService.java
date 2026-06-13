@@ -2,6 +2,7 @@ package com.bommbba.myslitel;
 
 import android.app.Service;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.Typeface;
@@ -9,6 +10,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.os.IBinder;
 import android.provider.Settings;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.Button;
@@ -19,12 +21,16 @@ import android.widget.TextView;
 import java.lang.ref.WeakReference;
 
 public class OverlayService extends Service {
+    private static final String PREFS = "myslitel_prefs";
+    private static final String KEY_OVERLAY_Y = "overlay_y";
     private static WeakReference<OverlayService> activeService;
 
     private WindowManager windowManager;
+    private WindowManager.LayoutParams overlayParams;
     private View overlayView;
     private TextView statusText;
     private EditText quickInput;
+    private SharedPreferences prefs;
 
     public static void updatePanelText(String text) {
         OverlayService service = activeService == null ? null : activeService.get();
@@ -41,6 +47,7 @@ public class OverlayService extends Service {
     public void onCreate() {
         super.onCreate();
         activeService = new WeakReference<>(this);
+        prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         createOverlay();
     }
 
@@ -62,29 +69,30 @@ public class OverlayService extends Service {
 
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setPadding(18, 14, 18, 14);
+        panel.setPadding(18, 12, 18, 12);
 
         GradientDrawable bg = new GradientDrawable();
         bg.setColor(0xF0222222);
         bg.setCornerRadius(24);
         panel.setBackground(bg);
 
-        TextView title = new TextView(this);
-        title.setText("Мыслитель 0.5 — панель активна");
-        title.setTextColor(Color.WHITE);
-        title.setTextSize(14);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        panel.addView(title, new LinearLayout.LayoutParams(-1, -2));
+        TextView dragHandle = new TextView(this);
+        dragHandle.setText("↕ Мыслитель 0.6 — потяни эту строку, чтобы двигать панель");
+        dragHandle.setTextColor(Color.WHITE);
+        dragHandle.setTextSize(13);
+        dragHandle.setTypeface(Typeface.DEFAULT_BOLD);
+        dragHandle.setGravity(Gravity.CENTER_HORIZONTAL);
+        panel.addView(dragHandle, new LinearLayout.LayoutParams(-1, -2));
 
         statusText = new TextView(this);
-        statusText.setText("Можно писать сообщение, нажимать “Анализ” или включить “Live”. Режимы: Комментатор/Навигатор/Учитель/Антиошибка/Тихий.");
+        statusText.setText("Напиши сообщение, нажми “Анализ” или включи “Live”. Режимы и остальные кнопки теперь в основном приложении.");
         statusText.setTextColor(0xFFDADADA);
         statusText.setTextSize(12);
         statusText.setPadding(0, 6, 0, 6);
         panel.addView(statusText, new LinearLayout.LayoutParams(-1, -2));
 
         quickInput = new EditText(this);
-        quickInput.setHint("Напиши Мыслителю… например: запомни, что я настраиваю приложение");
+        quickInput.setHint("Напиши Мыслителю… например: запомни, что я тестирую live");
         quickInput.setSingleLine(false);
         quickInput.setMinLines(1);
         quickInput.setMaxLines(2);
@@ -93,8 +101,8 @@ public class OverlayService extends Service {
         quickInput.setTextSize(13);
         panel.addView(quickInput, new LinearLayout.LayoutParams(-1, -2));
 
-        LinearLayout messageRow = new LinearLayout(this);
-        messageRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
 
         Button sendButton = smallButton("Спросить");
         sendButton.setOnClickListener(v -> {
@@ -107,79 +115,65 @@ public class OverlayService extends Service {
             updatePanelText("Отправляю сообщение с учётом текущего экрана…");
             MainActivity.askFromOverlay(text);
         });
-        messageRow.addView(sendButton, new LinearLayout.LayoutParams(0, -2, 1f));
+        row.addView(sendButton, new LinearLayout.LayoutParams(0, -2, 1f));
 
         Button analyzeButton = smallButton("Анализ");
         analyzeButton.setOnClickListener(v -> MainActivity.analyzeScreenFromOverlay());
-        messageRow.addView(analyzeButton, new LinearLayout.LayoutParams(0, -2, 1f));
-
-        Button openButton = smallButton("Открыть");
-        openButton.setOnClickListener(v -> {
-            Intent intent = new Intent(this, MainActivity.class);
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-            startActivity(intent);
-        });
-        messageRow.addView(openButton, new LinearLayout.LayoutParams(0, -2, 1f));
-        panel.addView(messageRow, new LinearLayout.LayoutParams(-1, -2));
-
-        LinearLayout modeRow = new LinearLayout(this);
-        modeRow.setOrientation(LinearLayout.HORIZONTAL);
-
-        Button commentatorButton = smallButton("Комм.");
-        commentatorButton.setOnClickListener(v -> MainActivity.setModeFromOverlay("Комментатор"));
-        modeRow.addView(commentatorButton, new LinearLayout.LayoutParams(0, -2, 1f));
-
-        Button navigatorButton = smallButton("Навиг.");
-        navigatorButton.setOnClickListener(v -> MainActivity.setModeFromOverlay("Навигатор"));
-        modeRow.addView(navigatorButton, new LinearLayout.LayoutParams(0, -2, 1f));
-
-        Button teacherButton = smallButton("Учитель");
-        teacherButton.setOnClickListener(v -> MainActivity.setModeFromOverlay("Учитель"));
-        modeRow.addView(teacherButton, new LinearLayout.LayoutParams(0, -2, 1f));
-
-        Button antiErrorButton = smallButton("Ошибка");
-        antiErrorButton.setOnClickListener(v -> MainActivity.setModeFromOverlay("Антиошибка"));
-        modeRow.addView(antiErrorButton, new LinearLayout.LayoutParams(0, -2, 1f));
-
-        Button quietButton = smallButton("Тихо");
-        quietButton.setOnClickListener(v -> MainActivity.setModeFromOverlay("Тихий"));
-        modeRow.addView(quietButton, new LinearLayout.LayoutParams(0, -2, 1f));
-        panel.addView(modeRow, new LinearLayout.LayoutParams(-1, -2));
-
-        LinearLayout liveRow = new LinearLayout(this);
-        liveRow.setOrientation(LinearLayout.HORIZONTAL);
+        row.addView(analyzeButton, new LinearLayout.LayoutParams(0, -2, 1f));
 
         Button liveButton = smallButton("Live");
         liveButton.setOnClickListener(v -> MainActivity.startLiveFromOverlay());
-        liveRow.addView(liveButton, new LinearLayout.LayoutParams(0, -2, 1f));
+        row.addView(liveButton, new LinearLayout.LayoutParams(0, -2, 1f));
 
         Button stopLiveButton = smallButton("Стоп live");
         stopLiveButton.setOnClickListener(v -> MainActivity.stopLiveFromOverlay());
-        liveRow.addView(stopLiveButton, new LinearLayout.LayoutParams(0, -2, 1f));
+        row.addView(stopLiveButton, new LinearLayout.LayoutParams(0, -2, 1f));
 
-        Button stopCaptureButton = smallButton("Стоп просмотр");
-        stopCaptureButton.setOnClickListener(v -> MainActivity.stopScreenCaptureFromOverlay());
-        liveRow.addView(stopCaptureButton, new LinearLayout.LayoutParams(0, -2, 1f));
+        panel.addView(row, new LinearLayout.LayoutParams(-1, -2));
 
-        Button hideButton = smallButton("Скрыть");
-        hideButton.setOnClickListener(v -> stopSelf());
-        liveRow.addView(hideButton, new LinearLayout.LayoutParams(0, -2, 1f));
-        panel.addView(liveRow, new LinearLayout.LayoutParams(-1, -2));
-
-        WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+        overlayParams = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT
         );
-        params.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
-        params.x = 0;
-        params.y = 8;
+        overlayParams.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
+        overlayParams.x = 0;
+        overlayParams.y = Math.max(0, prefs.getInt(KEY_OVERLAY_Y, 8));
+
+        dragHandle.setOnTouchListener(new View.OnTouchListener() {
+            private int startY;
+            private float startRawY;
+            private boolean moved;
+
+            @Override
+            public boolean onTouch(View v, MotionEvent event) {
+                if (overlayParams == null || windowManager == null || overlayView == null) return false;
+                switch (event.getAction()) {
+                    case MotionEvent.ACTION_DOWN:
+                        startY = overlayParams.y;
+                        startRawY = event.getRawY();
+                        moved = false;
+                        return true;
+                    case MotionEvent.ACTION_MOVE:
+                        int dy = Math.round(startRawY - event.getRawY());
+                        if (Math.abs(dy) > 4) moved = true;
+                        overlayParams.y = Math.max(0, startY + dy);
+                        try { windowManager.updateViewLayout(overlayView, overlayParams); } catch (Exception ignored) {}
+                        return true;
+                    case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_CANCEL:
+                        prefs.edit().putInt(KEY_OVERLAY_Y, overlayParams.y).apply();
+                        if (moved) updatePanelText("Положение панели сохранено. Потяни верхнюю строку, чтобы переместить снова.");
+                        return true;
+                }
+                return false;
+            }
+        });
 
         overlayView = panel;
-        windowManager.addView(overlayView, params);
+        windowManager.addView(overlayView, overlayParams);
     }
 
     @Override
